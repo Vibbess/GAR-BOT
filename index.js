@@ -13,6 +13,7 @@ const allowedBgcRoles = new Set();
 const TRELLO_BOARD_ID = "aBYHEacW";
 const GROUP_ID = "34397388"; 
 const MIN_CADET_RANK = 1; 
+const whitelistedServers = new Set(["1530236800151322845"]); 
 
 const DIVISION_MAP = {
     "1530283425691472055": "Republic Intelligence",
@@ -190,7 +191,33 @@ const commands = [
             option.setName("roblox_id")
                 .setDescription("Target Roblox User ID")
                 .setRequired(true)
-        )
+        ),
+
+new SlashCommandBuilder()
+    .setName("whitelist")
+    .setDescription("Whitelist a server ID for bot usage (Admin only)")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(option =>
+        option.setName("server_id")
+            .setDescription("Target Server (Guild) ID")
+            .setRequired(true)
+    ),
+
+new SlashCommandBuilder()
+    .setName("emebed")
+    .setDescription("Send a custom Discohook emebed (Admin only)")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addChannelOption(option =>
+        option.setName("channel")
+            .setDescription("Target text channel")
+            .setRequired(true)
+            .addChannelTypes(ChannelType.GuildText)
+    )
+    .addStringOption(option =>
+        option.setName("json")
+            .setDescription("Paste raw Discohook JSON payload here")
+            .setRequired(true)
+    )
 ];
 
 client.once("ready", async () => {
@@ -237,6 +264,48 @@ client.on("interactionCreate", async interaction => {
             await interaction.reply({ content: `Successfully **revoked** \`/bgc\` access from ${role}.`, ephemeral: true });
         }
     }
+
+    if (commandName === "whitelist") {
+    const targetServerId = interaction.options.getString("server_id");
+    whitelistedServers.add(targetServerId);
+    return interaction.reply({ 
+        content: `Successfully whitelisted server ID: \`${targetServerId}\`.`, 
+        ephemeral: true 
+    });
+}
+
+if (!whitelistedServers.has(guildId)) {
+    return interaction.reply({ 
+        content: "This server is not whitelisted to use this bot.", 
+        ephemeral: true 
+    });
+}
+
+if (commandName === "emebed") {
+    const channel = interaction.options.getChannel("channel");
+    const rawJson = interaction.options.getString("json");
+
+    try {
+        const payload = JSON.parse(rawJson);
+
+        const messageOptions = {};
+        if (payload.content) messageOptions.content = payload.content;
+        if (payload.embeds) messageOptions.embeds = payload.embeds;
+        if (payload.attachments) messageOptions.files = payload.attachments;
+
+        if (!messageOptions.content && (!messageOptions.embeds || messageOptions.embeds.length === 0)) {
+            return interaction.reply({ content: "Invalid JSON: Payload must include content or embeds.", ephemeral: true });
+        }
+
+        await channel.send(messageOptions);
+        await interaction.reply({ content: `Successfully sent embed to ${channel}.`, ephemeral: true });
+    } catch (err) {
+        await interaction.reply({ 
+            content: `**Failed to parse or send emebed.** Ensure you copied valid JSON from Discohook.\n\`\`\`${err.message}\`\`\``, 
+            ephemeral: true 
+        });
+    }
+}
 
     if (commandName === "bgc") {
         const memberRoles = interaction.member.roles.cache;
