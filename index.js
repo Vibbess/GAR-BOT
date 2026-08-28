@@ -5,15 +5,15 @@ const {
     Routes,
     SlashCommandBuilder,
     PermissionFlagsBits,
-    ChannelType
+    ChannelType,
+    MessageFlags
 } = require("discord.js");
-
-const allowedBgcRoles = new Set();
+const fs = require("fs");
+const path = require("path");
 
 const TRELLO_BOARD_ID = "aBYHEacW";
 const GROUP_ID = "34397388"; 
-const MIN_CADET_RANK = 1; 
-const whitelistedServers = new Set(["1530236800151322845"]); 
+const MIN_CADET_RANK = 1;   
 
 const DIVISION_MAP = {
     "1530283425691472055": "Republic Intelligence",
@@ -23,6 +23,33 @@ const DIVISION_MAP = {
     "1527321284466180196": "7th Sky Corps",
     "1531722864024096981": "Advanced Recon Commandos"
 };
+
+const DATA_FILE = path.join(__dirname, "servers.json");
+
+function loadServerData() {
+    if (!fs.existsSync(DATA_FILE)) {
+        const defaultData = { whitelistedServers: [], serverRoles: {} };
+        fs.writeFileSync(DATA_FILE, JSON.stringify(defaultData, null, 2));
+        return defaultData;
+    }
+    try {
+        const raw = fs.readFileSync(DATA_FILE, "utf8");
+        return JSON.parse(raw);
+    } catch (err) {
+        console.error("Error reading servers.json:", err);
+        return { whitelistedServers: [], serverRoles: {} };
+    }
+}
+
+function saveServerData(data) {
+    try {
+        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    } catch (err) {
+        console.error("Error saving to servers.json:", err);
+    }
+}
+
+const db = loadServerData();
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
@@ -149,18 +176,12 @@ async function checkClothingAndAccessories(robloxId) {
 
 const commands = [
     new SlashCommandBuilder()
-        .setName("talk")
-        .setDescription("Sends a message to a specific channel (Admin only)")
+        .setName("whitelist")
+        .setDescription("Whitelist a server ID for bot usage (Admin only)")
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addChannelOption(option =>
-            option.setName("channel")
-                .setDescription("Target text channel")
-                .setRequired(true)
-                .addChannelTypes(ChannelType.GuildText)
-        )
         .addStringOption(option =>
-            option.setName("message")
-                .setDescription("Message content")
+            option.setName("server_id")
+                .setDescription("Target Server (Guild) ID")
                 .setRequired(true)
         ),
 
@@ -180,6 +201,38 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
+        .setName("talk")
+        .setDescription("Sends a message to a specific channel (Admin only)")
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addChannelOption(option =>
+            option.setName("channel")
+                .setDescription("Target text channel")
+                .setRequired(true)
+                .addChannelTypes(ChannelType.GuildText)
+        )
+        .addStringOption(option =>
+            option.setName("message")
+                .setDescription("Message content")
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName("embed")
+        .setDescription("Send a custom Discohook-style JSON embed (Admin only)")
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addChannelOption(option =>
+            option.setName("channel")
+                .setDescription("Target text channel")
+                .setRequired(true)
+                .addChannelTypes(ChannelType.GuildText)
+        )
+        .addStringOption(option =>
+            option.setName("json")
+                .setDescription("Paste raw Discohook JSON payload here")
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
         .setName("bgc")
         .setDescription("Run a background check on a Roblox ID")
         .addUserOption(option =>
@@ -191,45 +244,19 @@ const commands = [
             option.setName("roblox_id")
                 .setDescription("Target Roblox User ID")
                 .setRequired(true)
-        ),
-
-new SlashCommandBuilder()
-    .setName("whitelist")
-    .setDescription("Whitelist a server ID for bot usage (Admin only)")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addStringOption(option =>
-        option.setName("server_id")
-            .setDescription("Target Server (Guild) ID")
-            .setRequired(true)
-    ),
-
-new SlashCommandBuilder()
-    .setName("emebed")
-    .setDescription("Send a custom Discohook emebed (Admin only)")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addChannelOption(option =>
-        option.setName("channel")
-            .setDescription("Target text channel")
-            .setRequired(true)
-            .addChannelTypes(ChannelType.GuildText)
-    )
-    .addStringOption(option =>
-        option.setName("json")
-            .setDescription("Paste raw Discohook JSON payload here")
-            .setRequired(true)
-    )
+        )
 ];
 
-client.once("ready", async () => {
+client.once("clientReady", async () => {
     console.log(`Logged in as ${client.user.tag}`);
 
-    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(
             Routes.applicationCommands(client.user.id),
             { body: commands }
         );
-        console.log("Registered slash commands.");
+        console.log("Registered slash commands successfully.");
     } catch (error) {
         console.error("Failed to register commands:", error);
     }
@@ -238,7 +265,53 @@ client.once("ready", async () => {
 client.on("interactionCreate", async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
-    const { commandName } = interaction;
+    const { commandName, guildId } = interaction;
+
+    if (!guildId) {
+        return interaction.reply({ content: "Commands can only be used inside a server.", flags: MessageFlags.Ephemeral });
+    }
+
+    if (commandName === "whitelist") {
+        const targetServerId = interaction.options.getString("server_id");
+        
+        if (!db.whitelistedServers.includes(targetServerId)) {
+            db.whitelistedServers.push(targetServerId);
+            saveServerData(db);
+        }
+
+        return interaction.reply({ 
+            content: `Successfully whitelisted server ID: \`${targetServerId}\`.`, 
+            flags: MessageFlags.Ephemeral 
+        });
+    }
+
+    if (!db.whitelistedServers.includes(guildId)) {
+        return interaction.reply({ 
+            content: "This server is not whitelisted to use this bot.", 
+            flags: MessageFlags.Ephemeral 
+        });
+    }
+
+    if (commandName === "setbgcrole") {
+        const role = interaction.options.getRole("role");
+        const allowed = interaction.options.getBoolean("allowed");
+
+        if (!db.serverRoles[guildId]) {
+            db.serverRoles[guildId] = [];
+        }
+
+        if (allowed) {
+            if (!db.serverRoles[guildId].includes(role.id)) {
+                db.serverRoles[guildId].push(role.id);
+            }
+            saveServerData(db);
+            return interaction.reply({ content: `Successfully **granted** \`/bgc\` access to ${role}.`, flags: MessageFlags.Ephemeral });
+        } else {
+            db.serverRoles[guildId] = db.serverRoles[guildId].filter(id => id !== role.id);
+            saveServerData(db);
+            return interaction.reply({ content: `Successfully **revoked** \`/bgc\` access from ${role}.`, flags: MessageFlags.Ephemeral });
+        }
+    }
 
     if (commandName === "talk") {
         const channel = interaction.options.getChannel("channel");
@@ -246,74 +319,45 @@ client.on("interactionCreate", async interaction => {
 
         try {
             await channel.send(message);
-            await interaction.reply({ content: `Successfully sent message to ${channel}.`, ephemeral: true });
+            await interaction.reply({ content: `Successfully sent message to ${channel}.`, flags: MessageFlags.Ephemeral });
         } catch (err) {
-            await interaction.reply({ content: `Failed to send message: ${err.message}`, ephemeral: true });
+            await interaction.reply({ content: `Failed to send message: ${err.message}`, flags: MessageFlags.Ephemeral });
         }
     }
 
-    if (commandName === "setbgcrole") {
-        const role = interaction.options.getRole("role");
-        const allowed = interaction.options.getBoolean("allowed");
+    if (commandName === "embed") {
+        const channel = interaction.options.getChannel("channel");
+        const rawJson = interaction.options.getString("json");
 
-        if (allowed) {
-            allowedBgcRoles.add(role.id);
-            await interaction.reply({ content: `Successfully **granted** \`/bgc\` access to ${role}.`, ephemeral: true });
-        } else {
-            allowedBgcRoles.delete(role.id);
-            await interaction.reply({ content: `Successfully **revoked** \`/bgc\` access from ${role}.`, ephemeral: true });
+        try {
+            const payload = JSON.parse(rawJson);
+            const messageOptions = {};
+            if (payload.content) messageOptions.content = payload.content;
+            if (payload.embeds) messageOptions.embeds = payload.embeds;
+            if (payload.attachments) messageOptions.files = payload.attachments;
+
+            if (!messageOptions.content && (!messageOptions.embeds || messageOptions.embeds.length === 0)) {
+                return interaction.reply({ content: "Invalid JSON: Payload must include content or embeds.", flags: MessageFlags.Ephemeral });
+            }
+
+            await channel.send(messageOptions);
+            await interaction.reply({ content: `Successfully sent embed to ${channel}.`, flags: MessageFlags.Ephemeral });
+        } catch (err) {
+            await interaction.reply({ 
+                content: `**Failed to parse or send embed.** Ensure you copied valid JSON from Discohook.\n\`\`\`${err.message}\`\`\``, 
+                flags: MessageFlags.Ephemeral 
+            });
         }
     }
-
-    if (commandName === "whitelist") {
-    const targetServerId = interaction.options.getString("server_id");
-    whitelistedServers.add(targetServerId);
-    return interaction.reply({ 
-        content: `Successfully whitelisted server ID: \`${targetServerId}\`.`, 
-        ephemeral: true 
-    });
-}
-
-if (!whitelistedServers.has(guildId)) {
-    return interaction.reply({ 
-        content: "This server is not whitelisted to use this bot.", 
-        ephemeral: true 
-    });
-}
-
-if (commandName === "emebed") {
-    const channel = interaction.options.getChannel("channel");
-    const rawJson = interaction.options.getString("json");
-
-    try {
-        const payload = JSON.parse(rawJson);
-
-        const messageOptions = {};
-        if (payload.content) messageOptions.content = payload.content;
-        if (payload.embeds) messageOptions.embeds = payload.embeds;
-        if (payload.attachments) messageOptions.files = payload.attachments;
-
-        if (!messageOptions.content && (!messageOptions.embeds || messageOptions.embeds.length === 0)) {
-            return interaction.reply({ content: "Invalid JSON: Payload must include content or embeds.", ephemeral: true });
-        }
-
-        await channel.send(messageOptions);
-        await interaction.reply({ content: `Successfully sent embed to ${channel}.`, ephemeral: true });
-    } catch (err) {
-        await interaction.reply({ 
-            content: `**Failed to parse or send emebed.** Ensure you copied valid JSON from Discohook.\n\`\`\`${err.message}\`\`\``, 
-            ephemeral: true 
-        });
-    }
-}
 
     if (commandName === "bgc") {
+        const allowedRoles = db.serverRoles[guildId] || [];
         const memberRoles = interaction.member.roles.cache;
         const hasPermission = interaction.member.permissions.has(PermissionFlagsBits.Administrator) || 
-                              memberRoles.some(role => allowedBgcRoles.has(role.id));
+                              memberRoles.some(role => allowedRoles.includes(role.id));
 
         if (!hasPermission) {
-            return interaction.reply({ content: "You do not have permission to use this command.", ephemeral: true });
+            return interaction.reply({ content: "You do not have permission to use this command.", flags: MessageFlags.Ephemeral });
         }
 
         await interaction.deferReply();
@@ -341,11 +385,10 @@ if (commandName === "emebed") {
             const sixMonthsAgo = new Date();
             sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
             const isSixMonthsOld = joinDateRaw <= sixMonthsAgo;
-            const passedBadgeCheck = badgeCount >= 100; 
+            const passedBadgeCheck = badgeCount >= 100;
             const passedCadetCheck = groupStatus.passed;
             const passedClothingCheck = hasClothing;
 
-            // Trello Blacklist Verification
             const blacklistResult = checkUserBlacklist(robloxData.name, robloxId, discordUser.id, trelloCards);
             
             let blacklistDisplay = "❌";
