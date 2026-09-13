@@ -78,10 +78,13 @@ async function startNoblox() {
         const cookie = process.env.ROBLOSECURITY?.trim();
 
         if (!cookie) {
-            throw new Error("ROBLOSECURITY is missing from .env");
+            throw new Error("ROBLOSECURITY is missing from environment variables.");
         }
 
-        const currentUser = await noblox.setCookie(cookie);
+        await noblox.setCookie(cookie);
+
+        // Verify the authenticated Roblox session
+        const currentUser = await noblox.getCurrentUser();
 
         console.log(
             `Logged into Roblox as ${currentUser.UserName} (${currentUser.UserID})`
