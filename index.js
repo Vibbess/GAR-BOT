@@ -75,13 +75,44 @@ const db = loadServerData();
 
 async function startNoblox() {
     try {
-        const currentUser = await noblox.setCookie(process.env.ROBLOSECURITY);
-        console.log(`Logged into Roblox as ${currentUser.UserName}`);
+        const cookie = process.env.ROBLOSECURITY?.trim();
+
+        if (!cookie) {
+            throw new Error("ROBLOSECURITY is missing from .env");
+        }
+
+        const currentUser = await noblox.setCookie(cookie);
+
+        console.log(
+            `Logged into Roblox as ${currentUser.UserName} (${currentUser.UserID})`
+        );
+
+        return true;
     } catch (err) {
         console.error("Failed to login to Roblox:", err.message);
+        return false;
     }
 }
 startNoblox();
+
+async function getRobloxDescription(robloxId) {
+    try {
+        const response = await fetch(
+            `https://users.roblox.com/v1/users/${robloxId}`
+        );
+
+        if (!response.ok) {
+            throw new Error(`Roblox API returned ${response.status}`);
+        }
+
+        const userData = await response.json();
+
+        return userData.description || "";
+    } catch (err) {
+        console.error("Failed to get Roblox description:", err);
+        return "";
+    }
+}
 
 function generatePhrase() {
     let phrase = [];
@@ -362,9 +393,10 @@ One Page of Clothing or Accessories: ${hasClothing ? "✅" : "❌"}
         if (!pending) return interaction.editReply("You haven't started verification. Run `/verify` first.");
 
         try {
-            const blurb = await noblox.getBlurb(pending.robloxId);
-            if (blurb.includes(pending.phrase)) {
-                pendingVerifications.delete(interaction.user.id);
+const blurb = await getRobloxDescription(pending.robloxId);
+
+if (blurb.toLowerCase().includes(pending.phrase.toLowerCase())) {
+                    pendingVerifications.delete(interaction.user.id);
                 const member = interaction.member;
                 
                 await member.roles.add([ROLES.VERIFIED_1, ROLES.VERIFIED_2]).catch(console.error);
