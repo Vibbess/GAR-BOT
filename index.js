@@ -487,44 +487,247 @@ const app = express();
 app.use(express.json());
 
 app.post("/api/playerData", async (req, res) => {
-    const { robloxId, username, action, data } = req.body;
-    
+    const startTime = Date.now();
+
     try {
-        const startTime = Date.now();
-        const trelloRes = await fetch(`https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`);
+        const { robloxId, username, action, data } = req.body;
+
+        console.log(
+            `[PlayerData] ${action} request from ${username} (${robloxId})`
+        );
+
+        if (!robloxId || !username || !action) {
+            return res.status(400).json({
+                success: false,
+                error: "Missing robloxId, username, or action"
+            });
+        }
+
+        if (action !== "load" && action !== "save") {
+            return res.status(400).json({
+                success: false,
+                error: "Invalid action"
+            });
+        }
+
+        if (!process.env.TRELLO_KEY || !process.env.TRELLO_TOKEN) {
+            console.error("TRELLO_KEY or TRELLO_TOKEN is missing.");
+
+            return res.status(500).json({
+                success: false,
+                error: "Trello configuration is missing"
+            });
+        }
+
+        const trelloUrl =
+            `https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards` +
+            `?key=${encodeURIComponent(process.env.TRELLO_KEY)}` +
+            `&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}`;
+
+        const trelloRes = await fetch(trelloUrl);
+
+        if (!trelloRes.ok) {
+            const trelloText = await trelloRes.text();
+
+            console.error(
+                `Trello API error ${trelloRes.status}: ${trelloText}`
+            );
+
+            return res.status(502).json({
+                success: false,
+                error: "Trello API unavailable"
+            });
+        }
+
         const cards = await trelloRes.json();
-        let card = cards.find(c => c.name.includes(`| ${robloxId} |`));
 
-        if (!card) return res.status(404).json({ error: "Unverified player" });
+        if (!Array.isArray(cards)) {
+            console.error("Trello returned invalid card data.");
 
-        let cardData = JSON.parse(card.desc || "{}");
-        
+            return res.status(502).json({
+                success: false,
+                error: "Invalid Trello response"
+            });
+        }
+
+        let card = cards.find(
+            c => c.name && c.name.includes(`| ${String(robloxId)} |`)
+        );
+
+        if (!card) {
+            console.log(
+                `[PlayerData] No database card found for ${username} (${robloxId})`
+            );
+
+            return res.status(404).json({
+                success: false,
+                error: "Unverified player"
+            });
+        }
+
+        let cardData = {};
+
+        try {
+            cardData = JSON.parse(card.desc || "{}");
+        } catch (parseError) {
+            console.error(
+                `Invalid JSON in Trello card ${card.id}:`,
+                parseError
+            );
+
+            return res.status(500).json({
+                success: false,
+                error: "Invalid database data"
+            });
+        }
+
+        // ==========================
+        // LOAD
+        // ==========================
+
         if (action === "load") {
-            if (cardData.isBanned) return res.json({ banned: true, reason: cardData.banReason });
-            
-            logToDiscord(username, robloxId, "joined", cardData, startTime);
-            return res.json({ success: true, data: cardData });
-        } 
-        
+            if (cardData.isBanned) {
+                console.log(
+                    `[PlayerData] Banned player attempted to join: ${username}`
+                );
+
+                return res.json({
+                    success: true,
+                    banned: true,
+                    reason: cardData.banReason || "No reason provided"
+                });
+            }
+
+            logToDiscord(
+                username,
+                robloxId,
+                "joined",
+                cardData,
+                startTime
+            );
+
+            return res.json({
+                success: true,
+                banned: false,
+                data: cardData
+            });
+        }
+
+        // ==========================
+        // SAVE
+        // ==========================
+
         if (action === "save") {
-            if (data.leaderstats && data.leaderstats.XP !== undefined) {
-                let currentXP = Math.min(data.leaderstats.XP, MAX_XP);
-                let newRankId = Math.floor(currentXP / 5) + 1;
-                
-                const groupRank = await noblox.getRankInGroup(GROUP_ID, robloxId);
-                if (groupRank >= 1 && groupRank <= 13 && newRankId > groupRank && newRankId <= 14) {
-                    await noblox.setRank(GROUP_ID, robloxId, newRankId).catch(console.error);
+            if (!data || typeof data !== "object") {
+                return res.status(400).json({
+                    success: false,
+                    error: "Invalid save data"
+                });
+            }
+
+            if (
+                data.leaderstats &&
+                data.leaderstats.XP !== undefined
+            ) {
+                const currentXP = Math.min(
+                    Number(data.leaderstats.XP) || 0,
+                    MAX_XP
+                );
+
+                const newRankId = Math.floor(currentXP / 5) + 1;
+
+                try {
+                    const groupRank =
+                        await noblox.getRankInGroup(
+                            GROUP_ID,
+                            Number(robloxId)
+                        );
+
+                    if (
+                        groupRank >= 1 &&
+                        groupRank <= 13 &&
+                        newRankId > groupRank &&
+                        newRankId <= 14
+                    ) {
+                        console.log(
+                            `Attempting rank update for ${username}: ${groupRank} -> ${newRankId}`
+                        );
+
+                        await noblox.setRank(
+                            GROUP_ID,
+                            Number(robloxId),
+                            newRankId
+                        );
+
+                        console.log(
+                            `Successfully ranked ${username} to ${newRankId}`
+                        );
+                    }
+                } catch (rankError) {
+                    console.error(
+                        `Rank update failed for ${username}:`,
+                        rankError.message
+                    );
+
+                    // Don't prevent the player's data from saving.
                 }
             }
 
-            await fetch(`https://api.trello.com/1/cards/${card.id}?desc=${encodeURIComponent(JSON.stringify(data))}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`, { method: 'PUT' });
-            
-            logToDiscord(username, robloxId, "left", data, startTime);
-            return res.json({ success: true });
+            const newDescription = JSON.stringify(data);
+
+            const updateUrl =
+                `https://api.trello.com/1/cards/${card.id}` +
+                `?key=${encodeURIComponent(process.env.TRELLO_KEY)}` +
+                `&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}`;
+
+            const updateRes = await fetch(updateUrl, {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded"
+                },
+                body: new URLSearchParams({
+                    desc: newDescription
+                })
+            });
+
+            if (!updateRes.ok) {
+                const updateText = await updateRes.text();
+
+                console.error(
+                    `Trello save error ${updateRes.status}: ${updateText}`
+                );
+
+                return res.status(502).json({
+                    success: false,
+                    error: "Failed to save data to Trello"
+                });
+            }
+
+            logToDiscord(
+                username,
+                robloxId,
+                "left",
+                data,
+                startTime
+            );
+
+            return res.json({
+                success: true
+            });
         }
+
     } catch (err) {
-        console.error("Roblox API Error:", err);
-        return res.status(500).json({ error: "Internal Server Error" });
+        console.error(
+            "[PlayerData] UNHANDLED ERROR:",
+            err
+        );
+
+        if (!res.headersSent) {
+            return res.status(500).json({
+                success: false,
+                error: "Internal Server Error"
+            });
+        }
     }
 });
 
@@ -554,5 +757,22 @@ function logToDiscord(username, robloxId, action, data, startTime) {
 }
 
 const PORT = process.env.PORT || 3000;
+
+app.get("/", (req, res) => {
+    res.status(200).json({
+        success: true,
+        service: "GAR Bot API",
+        status: "online"
+    });
+});
+
+app.get("/health", (req, res) => {
+    res.status(200).json({
+        success: true,
+        status: "online",
+        timestamp: new Date().toISOString()
+    });
+});
+
 app.listen(PORT, () => console.log(`Roblox API Server running on port ${PORT}`));
 client.login(process.env.DISCORD_TOKEN);
