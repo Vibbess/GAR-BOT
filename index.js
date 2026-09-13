@@ -756,23 +756,28 @@ function logToDiscord(username, robloxId, action, data, startTime) {
     channel.send(formattedText).catch(console.error);
 }
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
-app.get("/", (req, res) => {
-    res.status(200).json({
-        success: true,
-        service: "GAR Bot API",
-        status: "online"
-    });
+const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Roblox API Server running on port ${PORT}`);
 });
 
-app.get("/health", (req, res) => {
-    res.status(200).json({
-        success: true,
-        status: "online",
-        timestamp: new Date().toISOString()
-    });
+server.on("error", (err) => {
+    console.error("Express server error:", err);
 });
 
-app.listen(PORT, () => console.log(`Roblox API Server running on port ${PORT}`));
-client.login(process.env.DISCORD_TOKEN);
+process.on("uncaughtException", (err) => {
+    console.error("UNCAUGHT EXCEPTION:", err);
+});
+
+process.on("unhandledRejection", (reason) => {
+    console.error("UNHANDLED REJECTION:", reason);
+});
+
+client.login(process.env.DISCORD_TOKEN)
+    .then(() => {
+        console.log("Discord login successful.");
+    })
+    .catch((err) => {
+        console.error("Discord login failed:", err);
+    });
