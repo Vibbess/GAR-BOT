@@ -83,11 +83,10 @@ async function startNoblox() {
 
         await noblox.setCookie(cookie);
 
-        // Verify the authenticated Roblox session
-        const currentUser = await noblox.getCurrentUser();
+        const currentUser = await noblox.getAuthenticatedUser();
 
         console.log(
-            `Logged into Roblox as ${currentUser.UserName} (${currentUser.UserID})`
+            `Logged into Roblox as ${currentUser.name} (${currentUser.id})`
         );
 
         return true;
