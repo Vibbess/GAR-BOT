@@ -6,14 +6,22 @@ const {
     SlashCommandBuilder,
     PermissionFlagsBits,
     ChannelType,
-    MessageFlags
+    MessageFlags,
+    EmbedBuilder
 } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
+const express = require("express");
+const noblox = require("noblox.js");
+const crypto = require("crypto");
+require("dotenv").config();
 
-const TRELLO_BOARD_ID = "aBYHEacW";
-const GROUP_ID = "34397388"; 
-const MIN_CADET_RANK = 1;   
+const TRELLO_BOARD_ID = "aBYHEacW"; 
+const TRELLO_DATA_LIST = "6aa490130f19f0d6385bf410"; 
+const GROUP_ID = 34397388;
+const MIN_CADET_RANK = 1;
+const MAX_XP = 300;
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID; 
 
 const DIVISION_MAP = {
     "1530283425691472055": "Republic Intelligence",
@@ -24,6 +32,22 @@ const DIVISION_MAP = {
     "1531722864024096981": "Advanced Recon Commandos"
 };
 
+const ROLES = {
+    UNVERIFIED: "1548091737426370590",
+    VERIFIED_1: "1530265063724679258",
+    VERIFIED_2: "1530264541525446666",
+    RANKS: {
+        1: "1530265575211798569", 2: "1530265574364545085", 3: "1530265075548553226",
+        4: "1530265074667884584", 5: "1530265074483331113", 6: "1530265073304735764",
+        7: "1530265072801153128", 8: "1530265072029401178", 9: "1530265071781937183",
+        10: "1530265070888681572", 11: "1530265070175780944", 12: "1530265069399572621",
+        13: "1530265068347064505", 14: "1530265067696685157", 15: "1530265067298492418"
+    }
+};
+
+const VERIFY_WORDS = ["clone", "blaster", "coruscant", "jedi", "sith", "republic", "empire", "droid", "kamino", "fleet", "galaxy", "force", "lightsaber", "walker", "helmet"];
+const pendingVerifications = new Map();
+
 const DATA_FILE = path.join(__dirname, "servers.json");
 
 function loadServerData() {
@@ -33,8 +57,7 @@ function loadServerData() {
         return defaultData;
     }
     try {
-        const raw = fs.readFileSync(DATA_FILE, "utf8");
-        return JSON.parse(raw);
+        return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
     } catch (err) {
         console.error("Error reading servers.json:", err);
         return { whitelistedServers: [], serverRoles: {} };
@@ -48,34 +71,44 @@ function saveServerData(data) {
         console.error("Error saving to servers.json:", err);
     }
 }
-
 const db = loadServerData();
 
-const client = new Client({
-    intents: [GatewayIntentBits.Guilds]
-});
+async function startNoblox() {
+    try {
+        const currentUser = await noblox.setCookie(process.env.ROBLOSECURITY);
+        console.log(`Logged into Roblox as ${currentUser.UserName}`);
+    } catch (err) {
+        console.error("Failed to login to Roblox:", err.message);
+    }
+}
+startNoblox();
+
+function generatePhrase() {
+    let phrase = [];
+    for (let i = 0; i < 4; i++) {
+        phrase.push(VERIFY_WORDS[crypto.randomInt(0, VERIFY_WORDS.length)]);
+    }
+    return phrase.join(" ");
+}
 
 async function fetchTrelloBlacklists() {
     try {
         const res = await fetch(`https://trello.com/b/${TRELLO_BOARD_ID}.json`);
         if (!res.ok) return [];
-
         const board = await res.json();
         const listMap = new Map();
         
         for (const list of board.lists || []) {
-            const divName = DIVISION_MAP[list.id] || list.name;
-            listMap.set(list.id, divName);
+            listMap.set(list.id, DIVISION_MAP[list.id] || list.name);
         }
 
         const cards = [];
         for (const card of board.cards || []) {
-            const listName = listMap.get(card.idList) || "Unknown Board";
             cards.push({
                 id: card.id,
                 name: (card.name || "").trim(),
                 desc: (card.desc || "").trim(),
-                list: listName,
+                list: listMap.get(card.idList) || "Unknown Board",
                 due: card.due ? new Date(card.due) : null
             });
         }
@@ -91,76 +124,60 @@ function checkUserBlacklist(robloxUsername, robloxId, discordId, blacklistCards)
     const rIdStr = String(robloxId).trim();
     const dIdStr = String(discordId).trim();
     const now = new Date();
-
     const matches = [];
 
     for (const card of blacklistCards) {
         const cardNameLower = card.name.toLowerCase();
-        const cardDesc = card.desc;
         let isMatched = false;
 
-        if (rIdStr && (card.name.includes(rIdStr) || cardDesc.includes(rIdStr))) {
-            isMatched = true;
-        }
-
-        if (!isMatched && unameLower) {
-            if (cardNameLower.startsWith(unameLower) && 
-               (cardNameLower.length === unameLower.length || [" ", "|"].includes(cardNameLower[unameLower.length]))) {
-                isMatched = true;
-            }
-        }
-
-        if (!isMatched && dIdStr && (cardDesc.includes(dIdStr) || card.name.includes(dIdStr))) {
-            isMatched = true;
-        }
+        if (rIdStr && (card.name.includes(rIdStr) || card.desc.includes(rIdStr))) isMatched = true;
+        if (!isMatched && unameLower && cardNameLower.startsWith(unameLower) && (cardNameLower.length === unameLower.length || [" ", "|"].includes(cardNameLower[unameLower.length]))) isMatched = true;
+        if (!isMatched && dIdStr && (card.desc.includes(dIdStr) || card.name.includes(dIdStr))) isMatched = true;
 
         if (isMatched) {
-            const isOverdue = card.due && card.due < now;
-            matches.push({ ...card, isOverdue });
+            matches.push({ ...card, isOverdue: card.due && card.due < now });
         }
     }
 
-    const hasActiveBlacklist = matches.some(m => !m.isOverdue);
-    const hasOverdueBlacklist = matches.some(m => m.isOverdue);
-
-    return { isBlacklisted: matches.length > 0, hasActiveBlacklist, hasOverdueBlacklist, matches };
+    return { 
+        isBlacklisted: matches.length > 0, 
+        hasActiveBlacklist: matches.some(m => !m.isOverdue), 
+        hasOverdueBlacklist: matches.some(m => m.isOverdue), 
+        matches 
+    };
 }
 
 async function checkGroupRank(robloxId, groupId) {
     try {
         const res = await fetch(`https://groups.roblox.com/v1/users/${robloxId}/groups/roles`);
-        if (!res.ok) return { passed: false, rankName: "Not in Group" };
+        if (!res.ok) return { passed: false, rankName: "Not in Group", rankId: 0 };
         const data = await res.json();
         const groupInfo = data.data.find(g => g.group.id === Number(groupId));
         
-        if (!groupInfo) return { passed: false, rankName: "Not in Group" };
+        if (!groupInfo) return { passed: false, rankName: "Not in Group", rankId: 0 };
         return {
             passed: groupInfo.role.rank >= MIN_CADET_RANK,
-            rankName: groupInfo.role.name
+            rankName: groupInfo.role.name,
+            rankId: groupInfo.role.rank
         };
     } catch {
-        return { passed: false, rankName: "Error" };
+        return { passed: false, rankName: "Error", rankId: 0 };
     }
 }
 
 async function getBadgeCount(robloxId) {
     try {
-        let totalBadges = 0;
-        let cursor = "";
+        let total = 0, cursor = "";
         for (let i = 0; i < 2; i++) {
-            const url = `https://badges.roblox.com/v1/users/${robloxId}/badges?limit=100&sortOrder=Asc${cursor ? `&cursor=${cursor}` : ''}`;
-            const res = await fetch(url);
+            const res = await fetch(`https://badges.roblox.com/v1/users/${robloxId}/badges?limit=100&sortOrder=Asc${cursor ? `&cursor=${cursor}` : ''}`);
             if (!res.ok) break;
-            
             const data = await res.json();
-            totalBadges += data.data.length;
-            if (!data.nextPageCursor || totalBadges >= 125) break;
+            total += data.data.length;
+            if (!data.nextPageCursor || total >= 125) break;
             cursor = data.nextPageCursor;
         }
-        return totalBadges;
-    } catch {
-        return 0;
-    }
+        return total;
+    } catch { return 0; }
 }
 
 async function checkClothingAndAccessories(robloxId) {
@@ -169,93 +186,31 @@ async function checkClothingAndAccessories(robloxId) {
         if (!res.ok) return false;
         const data = await res.json();
         return data.assets && data.assets.length >= 6;
-    } catch {
-        return false;
-    }
+    } catch { return false; }
 }
 
+// ==========================================
+// DISCORD BOT COMMANDS & SETUP
+// ==========================================
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
 const commands = [
-    new SlashCommandBuilder()
-        .setName("whitelist")
-        .setDescription("Whitelist a server ID for bot usage (Admin only)")
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addStringOption(option =>
-            option.setName("server_id")
-                .setDescription("Target Server (Guild) ID")
-                .setRequired(true)
-        ),
-
-    new SlashCommandBuilder()
-        .setName("setbgcrole")
-        .setDescription("Grant or revoke /bgc permission for a role (Admin only)")
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addRoleOption(option =>
-            option.setName("role")
-                .setDescription("Role to modify")
-                .setRequired(true)
-        )
-        .addBooleanOption(option =>
-            option.setName("allowed")
-                .setDescription("True to allow, false to deny")
-                .setRequired(true)
-        ),
-
-    new SlashCommandBuilder()
-        .setName("talk")
-        .setDescription("Sends a message to a specific channel (Admin only)")
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addChannelOption(option =>
-            option.setName("channel")
-                .setDescription("Target text channel")
-                .setRequired(true)
-                .addChannelTypes(ChannelType.GuildText)
-        )
-        .addStringOption(option =>
-            option.setName("message")
-                .setDescription("Message content")
-                .setRequired(true)
-        ),
-
-    new SlashCommandBuilder()
-        .setName("embed")
-        .setDescription("Send a custom Discohook-style JSON embed (Admin only)")
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addChannelOption(option =>
-            option.setName("channel")
-                .setDescription("Target text channel")
-                .setRequired(true)
-                .addChannelTypes(ChannelType.GuildText)
-        )
-        .addStringOption(option =>
-            option.setName("json")
-                .setDescription("Paste raw Discohook JSON payload here")
-                .setRequired(true)
-        ),
-
-    new SlashCommandBuilder()
-        .setName("bgc")
-        .setDescription("Run a background check on a Roblox ID")
-        .addUserOption(option =>
-            option.setName("discord_user")
-                .setDescription("Target Discord account")
-                .setRequired(true)
-        )
-        .addStringOption(option =>
-            option.setName("roblox_id")
-                .setDescription("Target Roblox User ID")
-                .setRequired(true)
-        )
+    new SlashCommandBuilder().setName("whitelist").setDescription("Whitelist a server ID (Admin only)").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(opt => opt.setName("server_id").setDescription("Guild ID").setRequired(true)),
+    new SlashCommandBuilder().setName("setbgcrole").setDescription("Grant/revoke /bgc permission (Admin only)").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addRoleOption(opt => opt.setName("role").setDescription("Role").setRequired(true)).addBooleanOption(opt => opt.setName("allowed").setDescription("True/False").setRequired(true)),
+    new SlashCommandBuilder().setName("talk").setDescription("Send message to channel (Admin only)").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addChannelOption(opt => opt.setName("channel").setDescription("Text channel").setRequired(true).addChannelTypes(ChannelType.GuildText)).addStringOption(opt => opt.setName("message").setDescription("Content").setRequired(true)),
+    new SlashCommandBuilder().setName("embed").setDescription("Send JSON embed (Admin only)").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addChannelOption(opt => opt.setName("channel").setDescription("Text channel").setRequired(true).addChannelTypes(ChannelType.GuildText)).addStringOption(opt => opt.setName("json").setDescription("JSON payload").setRequired(true)),
+    new SlashCommandBuilder().setName("bgc").setDescription("Run a background check").addUserOption(opt => opt.setName("discord_user").setDescription("Discord User").setRequired(true)).addStringOption(opt => opt.setName("roblox_id").setDescription("Roblox ID").setRequired(true)),
+    new SlashCommandBuilder().setName("verify").setDescription("Start the Roblox verification process").addStringOption(opt => opt.setName("roblox_username").setDescription("Exact Roblox username").setRequired(true)),
+    new SlashCommandBuilder().setName("update").setDescription("Confirm verification and update roles"),
+    new SlashCommandBuilder().setName("profile").setDescription("View GAR database profile").addStringOption(opt => opt.setName("roblox_username").setDescription("Roblox username").setRequired(true)),
+    new SlashCommandBuilder().setName("ban").setDescription("Ban a user from the Roblox game via Trello").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(opt => opt.setName("roblox_id").setDescription("Roblox ID").setRequired(true)).addStringOption(opt => opt.setName("reason").setDescription("Ban Reason").setRequired(true))
 ];
 
 client.once("clientReady", async () => {
     console.log(`Logged in as ${client.user.tag}`);
-
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
     try {
-        await rest.put(
-            Routes.applicationCommands(client.user.id),
-            { body: commands }
-        );
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
         console.log("Registered slash commands successfully.");
     } catch (error) {
         console.error("Failed to register commands:", error);
@@ -264,46 +219,30 @@ client.once("clientReady", async () => {
 
 client.on("interactionCreate", async interaction => {
     if (!interaction.isChatInputCommand()) return;
-
     const { commandName, guildId } = interaction;
 
-    if (!guildId) {
-        return interaction.reply({ content: "Commands can only be used inside a server.", flags: MessageFlags.Ephemeral });
-    }
+    if (!guildId) return interaction.reply({ content: "Commands can only be used inside a server.", flags: MessageFlags.Ephemeral });
 
     if (commandName === "whitelist") {
         const targetServerId = interaction.options.getString("server_id");
-        
         if (!db.whitelistedServers.includes(targetServerId)) {
             db.whitelistedServers.push(targetServerId);
             saveServerData(db);
         }
-
-        return interaction.reply({ 
-            content: `Successfully whitelisted server ID: \`${targetServerId}\`.`, 
-            flags: MessageFlags.Ephemeral 
-        });
+        return interaction.reply({ content: `Successfully whitelisted server ID: \`${targetServerId}\`.`, flags: MessageFlags.Ephemeral });
     }
 
     if (!db.whitelistedServers.includes(guildId)) {
-        return interaction.reply({ 
-            content: "This server is not whitelisted to use this bot.", 
-            flags: MessageFlags.Ephemeral 
-        });
+        return interaction.reply({ content: "This server is not whitelisted to use this bot.", flags: MessageFlags.Ephemeral });
     }
 
     if (commandName === "setbgcrole") {
         const role = interaction.options.getRole("role");
         const allowed = interaction.options.getBoolean("allowed");
-
-        if (!db.serverRoles[guildId]) {
-            db.serverRoles[guildId] = [];
-        }
+        if (!db.serverRoles[guildId]) db.serverRoles[guildId] = [];
 
         if (allowed) {
-            if (!db.serverRoles[guildId].includes(role.id)) {
-                db.serverRoles[guildId].push(role.id);
-            }
+            if (!db.serverRoles[guildId].includes(role.id)) db.serverRoles[guildId].push(role.id);
             saveServerData(db);
             return interaction.reply({ content: `Successfully **granted** \`/bgc\` access to ${role}.`, flags: MessageFlags.Ephemeral });
         } else {
@@ -316,7 +255,6 @@ client.on("interactionCreate", async interaction => {
     if (commandName === "talk") {
         const channel = interaction.options.getChannel("channel");
         const message = interaction.options.getString("message");
-
         try {
             await channel.send(message);
             await interaction.reply({ content: `Successfully sent message to ${channel}.`, flags: MessageFlags.Ephemeral });
@@ -328,81 +266,54 @@ client.on("interactionCreate", async interaction => {
     if (commandName === "embed") {
         const channel = interaction.options.getChannel("channel");
         const rawJson = interaction.options.getString("json");
-
         try {
             const payload = JSON.parse(rawJson);
-            const messageOptions = {};
-            if (payload.content) messageOptions.content = payload.content;
-            if (payload.embeds) messageOptions.embeds = payload.embeds;
-            if (payload.attachments) messageOptions.files = payload.attachments;
+            const msgOpts = {};
+            if (payload.content) msgOpts.content = payload.content;
+            if (payload.embeds) msgOpts.embeds = payload.embeds;
+            if (payload.attachments) msgOpts.files = payload.attachments;
 
-            if (!messageOptions.content && (!messageOptions.embeds || messageOptions.embeds.length === 0)) {
+            if (!msgOpts.content && (!msgOpts.embeds || msgOpts.embeds.length === 0)) {
                 return interaction.reply({ content: "Invalid JSON: Payload must include content or embeds.", flags: MessageFlags.Ephemeral });
             }
-
-            await channel.send(messageOptions);
+            await channel.send(msgOpts);
             await interaction.reply({ content: `Successfully sent embed to ${channel}.`, flags: MessageFlags.Ephemeral });
         } catch (err) {
-            await interaction.reply({ 
-                content: `**Failed to parse or send embed.** Ensure you copied valid JSON from Discohook.\n\`\`\`${err.message}\`\`\``, 
-                flags: MessageFlags.Ephemeral 
-            });
+            await interaction.reply({ content: `**Failed to parse embed.**\n\`\`\`${err.message}\`\`\``, flags: MessageFlags.Ephemeral });
         }
     }
 
     if (commandName === "bgc") {
         const allowedRoles = db.serverRoles[guildId] || [];
-        const memberRoles = interaction.member.roles.cache;
-        const hasPermission = interaction.member.permissions.has(PermissionFlagsBits.Administrator) || 
-                              memberRoles.some(role => allowedRoles.includes(role.id));
-
-        if (!hasPermission) {
-            return interaction.reply({ content: "You do not have permission to use this command.", flags: MessageFlags.Ephemeral });
-        }
+        const hasPermission = interaction.member.permissions.has(PermissionFlagsBits.Administrator) || interaction.member.roles.cache.some(role => allowedRoles.includes(role.id));
+        if (!hasPermission) return interaction.reply({ content: "You do not have permission to use this command.", flags: MessageFlags.Ephemeral });
 
         await interaction.deferReply();
-
         const discordUser = interaction.options.getUser("discord_user");
         const robloxId = interaction.options.getString("roblox_id");
 
         try {
             const robloxRes = await fetch(`https://users.roblox.com/v1/users/${robloxId}`);
-            if (!robloxRes.ok) {
-                return interaction.editReply("Could not find a Roblox user with that ID.");
-            }
-
+            if (!robloxRes.ok) return interaction.editReply("Could not find a Roblox user with that ID.");
+            
             const robloxData = await robloxRes.json();
             const joinDateRaw = new Date(robloxData.created);
             const formattedDate = `${joinDateRaw.getDate()}/${joinDateRaw.getMonth() + 1}/${joinDateRaw.getFullYear()}`;
 
             const [groupStatus, badgeCount, hasClothing, trelloCards] = await Promise.all([
-                checkGroupRank(robloxId, GROUP_ID),
-                getBadgeCount(robloxId),
-                checkClothingAndAccessories(robloxId),
-                fetchTrelloBlacklists()
+                checkGroupRank(robloxId, GROUP_ID), getBadgeCount(robloxId),
+                checkClothingAndAccessories(robloxId), fetchTrelloBlacklists()
             ]);
 
             const sixMonthsAgo = new Date();
             sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-            const isSixMonthsOld = joinDateRaw <= sixMonthsAgo;
-            const passedBadgeCheck = badgeCount >= 100;
-            const passedCadetCheck = groupStatus.passed;
-            const passedClothingCheck = hasClothing;
-
-            const blacklistResult = checkUserBlacklist(robloxData.name, robloxId, discordUser.id, trelloCards);
             
+            const blacklistResult = checkUserBlacklist(robloxData.name, robloxId, discordUser.id, trelloCards);
             let blacklistDisplay = "❌";
-            if (blacklistResult.hasActiveBlacklist) {
-                const activeMatches = blacklistResult.matches.filter(m => !m.isOverdue).map(m => m.list).join(", ");
-                blacklistDisplay = `✅ (${activeMatches})`;
-            } else if (blacklistResult.hasOverdueBlacklist) {
-                blacklistDisplay = "⚠️ (Overdue Card Found)";
-            }
+            if (blacklistResult.hasActiveBlacklist) blacklistDisplay = `✅ (${blacklistResult.matches.filter(m => !m.isOverdue).map(m => m.list).join(", ")})`;
+            else if (blacklistResult.hasOverdueBlacklist) blacklistDisplay = "⚠️ (Overdue Card Found)";
 
-            const discordFlags = discordUser.flags ? discordUser.flags.toArray() : [];
-            const hasDiscordBadges = discordFlags.length > 0 ? "✅" : "❌";
-
-            const overallPassed = isSixMonthsOld && passedCadetCheck && passedBadgeCheck && passedClothingCheck && !blacklistResult.hasActiveBlacklist;
+            const overallPassed = (joinDateRaw <= sixMonthsAgo) && groupStatus.passed && (badgeCount >= 100) && hasClothing && !blacklistResult.hasActiveBlacklist;
 
             const bgcReport = `
 **Roblox Username:** ${robloxData.name}
@@ -410,25 +321,204 @@ client.on("interactionCreate", async interaction => {
 **Roblox Profile Link:** https://www.roblox.com/users/${robloxData.id}/profile
 **Roblox Join Date:** ${formattedDate}
 **Pages of Badges Amount:** ~${Math.ceil(badgeCount / 30)} pages (${badgeCount} total)
-**Discord Badges?:** ${hasDiscordBadges}
+**Discord Badges?:** ${discordUser.flags && discordUser.flags.toArray().length > 0 ? "✅" : "❌"}
 **Is the individual blacklisted from 501st?:** ${blacklistDisplay}
 
 **The Requirements:**
-Roblox Account 6+ months old: ${isSixMonthsOld ? "✅" : "❌"}
-Cadet+: ${passedCadetCheck ? "✅" : "❌"} (${groupStatus.rankName})
-125 Badges+ on Roblox: ${passedBadgeCheck ? "✅" : "❌"} (${badgeCount} badges)
-One Page of Clothing or Accessories: ${passedClothingCheck ? "✅" : "❌"}
+Roblox Account 6+ months old: ${joinDateRaw <= sixMonthsAgo ? "✅" : "❌"}
+Cadet+: ${groupStatus.passed ? "✅" : "❌"} (${groupStatus.rankName})
+125 Badges+ on Roblox: ${badgeCount >= 100 ? "✅" : "❌"} (${badgeCount} badges)
+One Page of Clothing or Accessories: ${hasClothing ? "✅" : "❌"}
 
-**Passed the BGC:** ${overallPassed ? "✅" : "❌"}
-            `.trim();
+**Passed the BGC:** ${overallPassed ? "✅" : "❌"}`.trim();
 
             await interaction.editReply(bgcReport);
-
         } catch (err) {
             console.error(err);
             await interaction.editReply("An error occurred while running the background check.");
         }
     }
+
+    if (commandName === "verify") {
+        const username = interaction.options.getString("roblox_username");
+        try {
+            const robloxId = await noblox.getIdFromUsername(username);
+            const phrase = generatePhrase();
+            pendingVerifications.set(interaction.user.id, { username, robloxId, phrase, time: Date.now() });
+            
+            return interaction.reply({
+                content: `**Verification started for ${username}**\nPlease put the following phrase in your Roblox "About" section (Bio):\n\n\`${phrase}\`\n\nOnce done, run \`/update\`.`,
+                flags: MessageFlags.Ephemeral
+            });
+        } catch (err) {
+            return interaction.reply({ content: "Could not find that Roblox username.", flags: MessageFlags.Ephemeral });
+        }
+    }
+
+    if (commandName === "update") {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const pending = pendingVerifications.get(interaction.user.id);
+        
+        if (!pending) return interaction.editReply("You haven't started verification. Run `/verify` first.");
+
+        try {
+            const blurb = await noblox.getBlurb(pending.robloxId);
+            if (blurb.includes(pending.phrase)) {
+                pendingVerifications.delete(interaction.user.id);
+                const member = interaction.member;
+                
+                await member.roles.add([ROLES.VERIFIED_1, ROLES.VERIFIED_2]).catch(console.error);
+                await member.roles.remove(ROLES.UNVERIFIED).catch(console.error);
+
+                const groupRank = await checkGroupRank(pending.robloxId, GROUP_ID);
+                if (groupRank.rankId && ROLES.RANKS[groupRank.rankId]) {
+                    await member.roles.add(ROLES.RANKS[groupRank.rankId]).catch(console.error);
+                }
+
+                const cardName = `${pending.username} | ${pending.robloxId} | ${interaction.user.id}`;
+                const defaultData = { leaderstats: { XP: 0, RXP: 0, Kills: 0 }, Gamepasses: {}, Settings: {}, ManualMedals: {}, PermaPerks: {} };
+                
+                const res = await fetch(`https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`);
+                const cards = await res.json();
+                if (!cards.find(c => c.name.includes(`| ${pending.robloxId} |`))) {
+                    await fetch(`https://api.trello.com/1/cards?idList=${TRELLO_DATA_LIST}&name=${encodeURIComponent(cardName)}&desc=${encodeURIComponent(JSON.stringify(defaultData))}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`, { method: 'POST' });
+                }
+
+                return interaction.editReply(`Successfully verified as **${pending.username}**! Your roles and GAR data profile have been updated.`);
+            } else {
+                return interaction.editReply("Could not find the phrase in your Roblox bio. Make sure it's saved and try again.");
+            }
+        } catch (err) {
+            console.error(err);
+            return interaction.editReply("An error occurred during verification.");
+        }
+    }
+
+    if (commandName === "profile") {
+        await interaction.deferReply();
+        const username = interaction.options.getString("roblox_username");
+        
+        try {
+            const robloxId = await noblox.getIdFromUsername(username);
+            const res = await fetch(`https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`);
+            const cards = await res.json();
+            const card = cards.find(c => c.name.includes(`| ${robloxId} |`));
+            
+            if (!card) return interaction.editReply(`No GAR Database profile found for **${username}**.`);
+            
+            const data = JSON.parse(card.desc || "{}");
+            const xp = data.leaderstats ? data.leaderstats.XP : 0;
+            const isBanned = data.isBanned ? `Yes (Reason: ${data.banReason})` : "No";
+
+            const embed = new EmbedBuilder()
+                .setTitle(`${username}'s GAR Profile`)
+                .setColor(data.isBanned ? 0xff0000 : 0x0099ff)
+                .addFields(
+                    { name: "Roblox ID", value: String(robloxId), inline: true },
+                    { name: "XP", value: String(xp), inline: true },
+                    { name: "Banned", value: isBanned, inline: false }
+                );
+            return interaction.editReply({ embeds: [embed] });
+        } catch (err) {
+            return interaction.editReply("Error finding user profile.");
+        }
+    }
+
+    if (commandName === "ban") {
+        await interaction.deferReply();
+        const rId = interaction.options.getString("roblox_id");
+        const reason = interaction.options.getString("reason");
+        
+        try {
+            const res = await fetch(`https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`);
+            const cards = await res.json();
+            const targetCard = cards.find(c => c.name.includes(`| ${rId} |`));
+            
+            if (!targetCard) return interaction.editReply("Could not find a GAR database entry for that Roblox ID.");
+
+            let data = JSON.parse(targetCard.desc || "{}");
+            data.isBanned = true;
+            data.banReason = reason;
+            
+            await fetch(`https://api.trello.com/1/cards/${targetCard.id}?desc=${encodeURIComponent(JSON.stringify(data))}&name=${encodeURIComponent("[BANNED] " + targetCard.name)}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`, { method: 'PUT' });
+            
+            return interaction.editReply(`Successfully banned Roblox ID **${rId}**. They will be kicked upon joining the game.`);
+        } catch (err) {
+            return interaction.editReply("API error occurred while processing ban.");
+        }
+    }
 });
 
+const app = express();
+app.use(express.json());
+
+app.post("/api/playerData", async (req, res) => {
+    const { robloxId, username, action, data } = req.body;
+    
+    try {
+        const startTime = Date.now();
+        const trelloRes = await fetch(`https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`);
+        const cards = await trelloRes.json();
+        let card = cards.find(c => c.name.includes(`| ${robloxId} |`));
+
+        if (!card) return res.status(404).json({ error: "Unverified player" });
+
+        let cardData = JSON.parse(card.desc || "{}");
+        
+        if (action === "load") {
+            if (cardData.isBanned) return res.json({ banned: true, reason: cardData.banReason });
+            
+            logToDiscord(username, robloxId, "joined", cardData, startTime);
+            return res.json({ success: true, data: cardData });
+        } 
+        
+        if (action === "save") {
+            if (data.leaderstats && data.leaderstats.XP !== undefined) {
+                let currentXP = Math.min(data.leaderstats.XP, MAX_XP);
+                let newRankId = Math.floor(currentXP / 5) + 1;
+                
+                const groupRank = await noblox.getRankInGroup(GROUP_ID, robloxId);
+                if (groupRank >= 1 && groupRank <= 13 && newRankId > groupRank && newRankId <= 14) {
+                    await noblox.setRank(GROUP_ID, robloxId, newRankId).catch(console.error);
+                }
+            }
+
+            await fetch(`https://api.trello.com/1/cards/${card.id}?desc=${encodeURIComponent(JSON.stringify(data))}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`, { method: 'PUT' });
+            
+            logToDiscord(username, robloxId, "left", data, startTime);
+            return res.json({ success: true });
+        }
+    } catch (err) {
+        console.error("Roblox API Error:", err);
+        return res.status(500).json({ error: "Internal Server Error" });
+    }
+});
+
+function logToDiscord(username, robloxId, action, data, startTime) {
+    const channel = client.channels.cache.get(LOG_CHANNEL_ID);
+    if (!channel) return;
+    
+    const timeTaken = ((Date.now() - startTime) / 1000).toFixed(3);
+    const actionText = action === "joined" ? "playerdataloading" : "playerdatasaving";
+    let formattedText = `${username} (${robloxId}) ${action} ${Date.now()}\n\`${actionText}\`\n`;
+    
+    if (action === "joined") {
+        for (const [category, values] of Object.entries(data)) {
+            if (typeof values === 'object') {
+                formattedText += `\n**${category}**\n`;
+                for (const [k, v] of Object.entries(values)) {
+                    formattedText += `${k}: ${v}\n`;
+                }
+            }
+        }
+        formattedText += `\n\nplayerdata loaded in ${timeTaken}s`;
+    } else {
+        formattedText += `\`\`\`json\n${JSON.stringify(data)}\n\`\`\`\nplayer data saved to Railway & Trello in ${timeTaken}s`;
+    }
+
+    channel.send(formattedText).catch(console.error);
+}
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Roblox API Server running on port ${PORT}`));
 client.login(process.env.DISCORD_TOKEN);
