@@ -493,18 +493,23 @@ app.use(express.json());
 
 app.post("/api/playerData", async (req, res) => {
     const { robloxId, username, action, data } = req.body;
-    
+    const startTime = Date.now();
+
     try {
-        const startTime = Date.now();
-        
-        // Fetch cards from Trello
-        const trelloRes = await fetch(`https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`);
-        
-        // SAFELY CHECK RESPONSE BEFORE PARSING JSON
+        // Verify Trello environment variables exist
+        if (!process.env.TRELLO_KEY || !process.env.TRELLO_TOKEN) {
+            console.error("❌ Missing TRELLO_KEY or TRELLO_TOKEN environment variables in Railway!");
+            return res.status(500).json({ error: "Server missing Trello credentials" });
+        }
+
+        const trelloRes = await fetch(
+            `https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`
+        );
+
         if (!trelloRes.ok) {
             const errorText = await trelloRes.text();
-            console.error(`Trello API Error (HTTP ${trelloRes.status}): ${errorText}`);
-            return res.status(500).json({ error: `Trello returned error: ${errorText}` });
+            console.error(`❌ Trello API Request Failed (${trelloRes.status}): ${errorText}`);
+            return res.status(500).json({ error: `Trello Error: ${errorText}` });
         }
 
         const cards = await trelloRes.json();
@@ -522,25 +527,34 @@ app.post("/api/playerData", async (req, res) => {
         } 
         
         if (action === "save") {
-            if (data.leaderstats && data.leaderstats.XP !== undefined) {
+            if (data && data.leaderstats && data.leaderstats.XP !== undefined) {
                 let currentXP = Math.min(data.leaderstats.XP, MAX_XP);
                 let newRankId = Math.floor(currentXP / 5) + 1;
                 
                 const groupRank = await noblox.getRankInGroup(GROUP_ID, robloxId);
-                // If they are between ranks 1 and 13, and their calculated rank is higher, promote them up to max rank 14
                 if (groupRank >= 1 && groupRank <= 13 && newRankId > groupRank && newRankId <= 14) {
                     await noblox.setRank(GROUP_ID, robloxId, newRankId).catch(console.error);
                 }
             }
 
-            await fetch(`https://api.trello.com/1/cards/${card.id}?desc=${encodeURIComponent(JSON.stringify(data))}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`, { method: 'PUT' });
+            const putRes = await fetch(
+                `https://api.trello.com/1/cards/${card.id}?desc=${encodeURIComponent(JSON.stringify(data))}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`,
+                { method: 'PUT' }
+            );
+
+            if (!putRes.ok) {
+                const putErrText = await putRes.text();
+                console.error(`❌ Failed to update Trello card: ${putErrText}`);
+            }
             
             logToDiscord(username, robloxId, "left", data, startTime);
             return res.json({ success: true });
         }
+
+        return res.status(400).json({ error: "Invalid action" });
     } catch (err) {
-        console.error("Roblox API Error:", err);
-        return res.status(500).json({ error: "Internal Server Error" });
+        console.error("❌ Roblox API Internal Server Error:", err);
+        return res.status(500).json({ error: "Internal Server Error", details: err.message });
     }
 });
 
