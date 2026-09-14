@@ -513,16 +513,16 @@ app.post("/api/playerData", async (req, res) => {
             });
         }
 
-        if (!process.env.TRELLO_KEY || !process.env.TRELLO_TOKEN || !process.env.BOARD_ID) {
-            console.error("Trello configuration or BOARD_ID is missing.");
+        if (!process.env.TRELLO_KEY || !process.env.TRELLO_TOKEN || !process.env.TRELLO_DATA_LIST) {
+            console.error("Trello configuration or TRELLO_DATA_LIST is missing.");
             return res.status(500).json({
                 success: false,
                 error: "Trello configuration is missing"
             });
         }
 
-        // 1. Fetch all open cards across the entire board
-        const trelloUrl = `https://api.trello.com/1/boards/${process.env.BOARD_ID}/cards?key=${encodeURIComponent(process.env.TRELLO_KEY)}&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}&filter=open`;
+        // Fetch cards from the specified list safely
+        const trelloUrl = `https://api.trello.com/1/lists/${process.env.TRELLO_DATA_LIST}/cards?key=${encodeURIComponent(process.env.TRELLO_KEY)}&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}&filter=open`;
 
         let trelloRes;
         let retries = 3;
@@ -533,44 +533,70 @@ app.post("/api/playerData", async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
 
+        const responseText = trelloRes ? await trelloRes.text() : "No response";
+
         if (!trelloRes || !trelloRes.ok) {
-            const trelloText = trelloRes ? await trelloRes.text() : "No response";
-            console.error(`Trello API error ${trelloRes ? trelloRes.status : "unknown"}: ${trelloText}`);
+            console.error(`Trello API error ${trelloRes ? trelloRes.status : "unknown"}: ${responseText}`);
             return res.status(502).json({
                 success: false,
-                error: `Trello API unavailable`
+                error: `Trello API unavailable: ${responseText}`
             });
         }
 
-        const cards = await trelloRes.json();
-        if (!Array.isArray(cards)) {
-            return res.status(502).json({ success: false, error: "Invalid Trello response" });
+        // Safely parse JSON to prevent "Unexpected token 'm'" crashes if text is returned instead of JSON
+        let cards;
+        try {
+            cards = JSON.parse(responseText);
+        } catch (parseErr) {
+            console.error("Failed to parse Trello response as JSON:", responseText);
+            return res.status(502).json({
+                success: false,
+                error: "Invalid response from Trello API"
+            });
         }
 
-        // 2. Robust regex match for the Roblox ID across the board
-        const idRegex = new RegExp(`\\b${robloxId}\\b`);
-        let card = cards.find(c => idRegex.test(c.name) && c.name !== "PLAYERMORPHS");
+        if (!Array.isArray(cards)) {
+            return res.status(502).json({ success: false, error: "Invalid Trello response structure" });
+        }
 
-        // 3. If card doesn't exist on load, auto-create it with default structure
+        // Match card by Roblox ID securely using regex or includes
+        const idRegex = new RegExp(`\\b${robloxId}\\b`);
+        let card = cards.find(c => idRegex.test(c.name));
+
+        // AUTO-CREATE CARD IF IT DOES NOT EXIST (Prevents 404 Unverified Player error)
         if (!card && action === "load") {
             const finalName = `${username} | ${robloxId}`;
-            const defaultDesc = `**PermaPerks**\nForceBlind: false\n\n**Settings**\nOverhead: true\n\n**leaderstats**\nXP: 0`;
+            const defaultDesc = JSON.stringify({
+                leaderstats: { XP: 0 },
+                Settings: { Overhead: true },
+                PermaPerks: {}
+            }, null, 2);
 
-            const createRes = await fetch(`https://api.trello.com/1/cards?key=${encodeURIComponent(process.env.TRELLO_KEY)}&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}`, {
+            const createUrl = `https://api.trello.com/1/cards?key=${encodeURIComponent(process.env.TRELLO_KEY)}&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}`;
+            const createRes = await fetch(createUrl, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     name: finalName,
-                    idList: TRELLO_DATA_LIST,
+                    idList: process.env.TRELLO_DATA_LIST,
                     desc: defaultDesc
                 })
             });
 
+            const createResponseText = await createRes.text();
             if (!createRes.ok) {
+                console.error("Failed to auto-create player card:", createResponseText);
                 return res.status(500).json({ success: false, error: "Failed to create player profile card" });
             }
 
-            card = await createRes.json();
+            try {
+                card = JSON.parse(createResponseText);
+            } catch (e) {
+                console.error("Failed to parse newly created card response");
+                return res.status(500).json({ success: false, error: "Card creation parsing error" });
+            }
+
+            console.log(`[PlayerData] Auto-created new card for new player: ${username} (${robloxId})`);
         }
 
         if (!card) {
@@ -581,7 +607,6 @@ app.post("/api/playerData", async (req, res) => {
         try {
             cardData = JSON.parse(card.desc || "{}");
         } catch (parseError) {
-            // If desc is formatted as raw text sections instead of pure JSON, parse sections or pass raw
             cardData = { rawDesc: card.desc };
         }
 
@@ -590,8 +615,7 @@ app.post("/api/playerData", async (req, res) => {
             return res.json({
                 success: true,
                 banned: false,
-                data: cardData,
-                description: card.desc
+                data: cardData
             });
         }
 
@@ -600,16 +624,21 @@ app.post("/api/playerData", async (req, res) => {
                 return res.status(400).json({ success: false, error: "Invalid save data" });
             }
 
-            const newDescription = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+            const newDescription = JSON.stringify(data, null, 2);
 
             const updateUrl = `https://api.trello.com/1/cards/${card.id}?key=${encodeURIComponent(process.env.TRELLO_KEY)}&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}`;
             const updateRes = await fetch(updateUrl, {
                 method: "PUT",
                 headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                body: new URLSearchParams({ desc: newDescription, name: `${username} | ${robloxId}` })
+                body: new URLSearchParams({ 
+                    desc: newDescription, 
+                    name: `${username} | ${robloxId}` 
+                })
             });
 
             if (!updateRes.ok) {
+                const updateText = await updateRes.text();
+                console.error(`Trello save error: ${updateText}`);
                 return res.status(502).json({ success: false, error: "Failed to save data to Trello" });
             }
 
