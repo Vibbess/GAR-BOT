@@ -95,8 +95,8 @@ function cleanCookie(cookieString) {
 const rawCookie = process.env.ROBLOSECURITY;
 const validCookie = cleanCookie(rawCookie);
 
-noblox.setCookie(validCookie).then(() => {
-    console.log("Successfully logged into Roblox!");
+noblox.setCookie(validCookie).then((user) => {
+    console.log(`Logged into Roblox as ${user.UserName}`);
 }).catch((err) => {
     console.error("Failed to log into Roblox:", err);
 });
