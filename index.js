@@ -659,6 +659,10 @@ app.post("/api/playerData", async (req, res) => {
     console.log(`==============================================\n`);
 });
 
+app.get("/api/playerData", (req, res) => {
+    res.status(200).json({ success: true, message: "GAR API is online and running!" });
+});
+
 function logToDiscord(username, robloxId, action, data, startTime) {
     const channel = client.channels.cache.get(LOG_CHANNEL_ID);
     if (!channel) return;
