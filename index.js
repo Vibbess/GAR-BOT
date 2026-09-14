@@ -515,8 +515,23 @@ app.post("/api/playerData", async (req, res) => {
         const cards = await trelloRes.json();
         let card = cards.find(c => c.name.includes(`| ${robloxId} |`));
 
-        if (!card) return res.status(404).json({ error: "Unverified player" });
+if (!card) {
+    if (action === "load") {
+        // Automatically create a new Trello card for first-time players
+        const createRes = await fetch(
+            `https://api.trello.com/1/cards?idList=${TRELLO_DATA_LIST}&name=${encodeURIComponent(`${username} | ${robloxId} |`)}&desc=${encodeURIComponent("{}")}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`,
+            { method: 'POST' }
+        );
 
+        if (!createRes.ok) {
+            console.error("❌ Failed to create Trello card:", await createRes.text());
+            return res.status(500).json({ error: "Failed to create player card" });
+        }
+
+        return res.json({ success: true, data: {} });
+    }
+    return res.status(404).json({ error: "Player card not found" });
+}
         let cardData = JSON.parse(card.desc || "{}");
         
         if (action === "load") {
