@@ -497,9 +497,7 @@ app.post("/api/playerData", async (req, res) => {
     try {
         const { robloxId, username, action, data } = req.body;
 
-        console.log(
-            `[PlayerData] ${action} request from ${username} (${robloxId})`
-        );
+        console.log(`[PlayerData] ${action} request from ${username} (${robloxId})`);
 
         if (!robloxId || !username || !action) {
             return res.status(400).json({
@@ -515,19 +513,16 @@ app.post("/api/playerData", async (req, res) => {
             });
         }
 
-        if (!process.env.TRELLO_KEY || !process.env.TRELLO_TOKEN) {
-            console.error("TRELLO_KEY or TRELLO_TOKEN is missing.");
-
+        if (!process.env.TRELLO_KEY || !process.env.TRELLO_TOKEN || !process.env.BOARD_ID) {
+            console.error("Trello configuration or BOARD_ID is missing.");
             return res.status(500).json({
                 success: false,
                 error: "Trello configuration is missing"
             });
         }
 
-        const trelloUrl =
-            `https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards` +
-            `?key=${encodeURIComponent(process.env.TRELLO_KEY)}` +
-            `&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}`;
+        // 1. Fetch all open cards across the entire board
+        const trelloUrl = `https://api.trello.com/1/boards/${process.env.BOARD_ID}/cards?key=${encodeURIComponent(process.env.TRELLO_KEY)}&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}&filter=open`;
 
         let trelloRes;
         let retries = 3;
@@ -540,195 +535,92 @@ app.post("/api/playerData", async (req, res) => {
 
         if (!trelloRes || !trelloRes.ok) {
             const trelloText = trelloRes ? await trelloRes.text() : "No response";
-
-            console.error(
-                `Trello API error ${trelloRes ? trelloRes.status : "unknown"}: ${trelloText}`
-            );
-
+            console.error(`Trello API error ${trelloRes ? trelloRes.status : "unknown"}: ${trelloText}`);
             return res.status(502).json({
                 success: false,
-                error: `Trello API unavailable (${trelloRes ? trelloRes.status : "unknown"}): ${trelloText}`
+                error: `Trello API unavailable`
             });
         }
 
         const cards = await trelloRes.json();
-
         if (!Array.isArray(cards)) {
-            console.error("Trello returned invalid card data.");
-
-            return res.status(502).json({
-                success: false,
-                error: "Invalid Trello response"
-            });
+            return res.status(502).json({ success: false, error: "Invalid Trello response" });
         }
 
-        let card = cards.find(
-            c => c.name && c.name.includes(`| ${String(robloxId)} |`)
-        );
+        // 2. Robust regex match for the Roblox ID across the board
+        const idRegex = new RegExp(`\\b${robloxId}\\b`);
+        let card = cards.find(c => idRegex.test(c.name) && c.name !== "PLAYERMORPHS");
+
+        // 3. If card doesn't exist on load, auto-create it with default structure
+        if (!card && action === "load") {
+            const finalName = `${username} | ${robloxId}`;
+            const defaultDesc = `**PermaPerks**\nForceBlind: false\n\n**Settings**\nOverhead: true\n\n**leaderstats**\nXP: 0`;
+
+            const createRes = await fetch(`https://api.trello.com/1/cards?key=${encodeURIComponent(process.env.TRELLO_KEY)}&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: finalName,
+                    idList: TRELLO_DATA_LIST,
+                    desc: defaultDesc
+                })
+            });
+
+            if (!createRes.ok) {
+                return res.status(500).json({ success: false, error: "Failed to create player profile card" });
+            }
+
+            card = await createRes.json();
+        }
 
         if (!card) {
-            console.log(
-                `[PlayerData] No database card found for ${username} (${robloxId})`
-            );
-
-            return res.status(404).json({
-                success: false,
-                error: "Unverified player"
-            });
+            return res.status(404).json({ success: false, error: "Unverified player" });
         }
 
         let cardData = {};
-
         try {
             cardData = JSON.parse(card.desc || "{}");
         } catch (parseError) {
-            console.error(
-                `Invalid JSON in Trello card ${card.id}:`,
-                parseError
-            );
-
-            return res.status(500).json({
-                success: false,
-                error: "Invalid database data"
-            });
+            // If desc is formatted as raw text sections instead of pure JSON, parse sections or pass raw
+            cardData = { rawDesc: card.desc };
         }
 
         if (action === "load") {
-            if (cardData.isBanned) {
-                console.log(
-                    `[PlayerData] Banned player attempted to join: ${username}`
-                );
-
-                return res.json({
-                    success: true,
-                    banned: true,
-                    reason: cardData.banReason || "No reason provided"
-                });
-            }
-
-            logToDiscord(
-                username,
-                robloxId,
-                "joined",
-                cardData,
-                startTime
-            );
-
+            logToDiscord(username, robloxId, "joined", cardData, startTime);
             return res.json({
                 success: true,
                 banned: false,
-                data: cardData
+                data: cardData,
+                description: card.desc
             });
         }
 
         if (action === "save") {
             if (!data || typeof data !== "object") {
-                return res.status(400).json({
-                    success: false,
-                    error: "Invalid save data"
-                });
+                return res.status(400).json({ success: false, error: "Invalid save data" });
             }
 
-            if (
-                data.leaderstats &&
-                data.leaderstats.XP !== undefined
-            ) {
-                const currentXP = Math.min(
-                    Number(data.leaderstats.XP) || 0,
-                    MAX_XP
-                );
+            const newDescription = typeof data === "string" ? data : JSON.stringify(data, null, 2);
 
-                const newRankId = Math.floor(currentXP / 5) + 1;
-
-                try {
-                    const groupRank =
-                        await noblox.getRankInGroup(
-                            GROUP_ID,
-                            Number(robloxId)
-                        );
-
-                    if (
-                        groupRank >= 1 &&
-                        groupRank <= 13 &&
-                        newRankId > groupRank &&
-                        newRankId <= 14
-                    ) {
-                        console.log(
-                            `Attempting rank update for ${username}: ${groupRank} -> ${newRankId}`
-                        );
-
-                        await noblox.setRank(
-                            GROUP_ID,
-                            Number(robloxId),
-                            newRankId
-                        );
-
-                        console.log(
-                            `Successfully ranked ${username} to ${newRankId}`
-                        );
-                    }
-                } catch (rankError) {
-                    console.error(
-                        `Rank update failed for ${username}:`,
-                        rankError.message
-                    );
-                }
-            }
-
-            const newDescription = JSON.stringify(data);
-
-            const updateUrl =
-                `https://api.trello.com/1/cards/${card.id}` +
-                `?key=${encodeURIComponent(process.env.TRELLO_KEY)}` +
-                `&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}`;
-
+            const updateUrl = `https://api.trello.com/1/cards/${card.id}?key=${encodeURIComponent(process.env.TRELLO_KEY)}&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}`;
             const updateRes = await fetch(updateUrl, {
                 method: "PUT",
-                headers: {
-                    "Content-Type": "application/x-www-form-urlencoded"
-                },
-                body: new URLSearchParams({
-                    desc: newDescription
-                })
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({ desc: newDescription, name: `${username} | ${robloxId}` })
             });
 
             if (!updateRes.ok) {
-                const updateText = await updateRes.text();
-
-                console.error(
-                    `Trello save error ${updateRes.status}: ${updateText}`
-                );
-
-                return res.status(502).json({
-                    success: false,
-                    error: "Failed to save data to Trello"
-                });
+                return res.status(502).json({ success: false, error: "Failed to save data to Trello" });
             }
 
-            logToDiscord(
-                username,
-                robloxId,
-                "left",
-                data,
-                startTime
-            );
-
-            return res.json({
-                success: true
-            });
+            logToDiscord(username, robloxId, "left", data, startTime);
+            return res.json({ success: true });
         }
 
     } catch (err) {
-        console.error(
-            "[PlayerData] UNHANDLED ERROR:",
-            err
-        );
-
+        console.error("[PlayerData] UNHANDLED ERROR:", err);
         if (!res.headersSent) {
-            return res.status(500).json({
-                success: false,
-                error: "Internal Server Error"
-            });
+            return res.status(500).json({ success: false, error: "Internal Server Error" });
         }
     }
 });
