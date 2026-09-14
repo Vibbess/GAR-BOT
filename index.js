@@ -79,6 +79,28 @@ function saveServerData(data) {
 }
 const db = loadServerData();
 
+function cleanCookie(cookieString) {
+    if (!cookieString) return "";
+    // If the input contains a full cookie string, extract the .ROBLOSECURITY value
+    if (cookieString.includes(".ROBLOSECURITY=")) {
+        const match = cookieString.match(/\.ROBLOSECURITY=([^;]+)/);
+        if (match) {
+            return match[1].trim();
+        }
+    }
+    return cookieString.trim();
+}
+
+// Use it when logging into noblox
+const rawCookie = process.env.ROBLOSECURITY;
+const validCookie = cleanCookie(rawCookie);
+
+noblox.setCookie(validCookie).then(() => {
+    console.log("Successfully logged into Roblox!");
+}).catch((err) => {
+    console.error("Failed to log into Roblox:", err);
+});
+
 // ==========================================
 // NOBLOX & HELPERS
 // ==========================================
