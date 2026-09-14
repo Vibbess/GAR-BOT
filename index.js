@@ -20,7 +20,7 @@ require("dotenv").config();
 // CONFIGURATION & CONSTANTS
 // ==========================================
 const TRELLO_BOARD_ID = "aBYHEacW"; 
-const TRELLO_DATA_LIST = "6aa490130f19f0d6385bf410"; // GAR Data List
+const TRELLO_DATA_LIST = "6aa4901ab30946a1b86df774"; // GAR Data List
 const GROUP_ID = 34397388;
 const MIN_CADET_RANK = 1;
 const MAX_XP = 300;
