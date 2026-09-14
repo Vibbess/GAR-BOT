@@ -496,7 +496,17 @@ app.post("/api/playerData", async (req, res) => {
     
     try {
         const startTime = Date.now();
+        
+        // Fetch cards from Trello
         const trelloRes = await fetch(`https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`);
+        
+        // SAFELY CHECK RESPONSE BEFORE PARSING JSON
+        if (!trelloRes.ok) {
+            const errorText = await trelloRes.text();
+            console.error(`Trello API Error (HTTP ${trelloRes.status}): ${errorText}`);
+            return res.status(500).json({ error: `Trello returned error: ${errorText}` });
+        }
+
         const cards = await trelloRes.json();
         let card = cards.find(c => c.name.includes(`| ${robloxId} |`));
 
