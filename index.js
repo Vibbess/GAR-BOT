@@ -16,15 +16,16 @@ const noblox = require("noblox.js");
 const crypto = require("crypto");
 require("dotenv").config();
 
-// ==========================================
-// CONFIGURATION & CONSTANTS
-// ==========================================
 const TRELLO_BOARD_ID = "aBYHEacW"; 
-const TRELLO_DATA_LIST = "6aa4901ab30946a1b86df774"; // GAR Data List
+const TRELLO_DATA_LIST = "6aa4901ab30946a1b86df774"; 
 const GROUP_ID = 34397388;
 const MIN_CADET_RANK = 1;
 const MAX_XP = 300;
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID; // Add this to Railway variables
+
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID; 
+const BAN_LOG_CHANNEL = "1547361870183272508";
+const PROMO_LOG_CHANNEL = "1548119640943755344";
+const HEALTH_LOG_CHANNEL = "1549143712246796288";
 
 const DIVISION_MAP = {
     "1530283425691472055": "Republic Intelligence",
@@ -51,56 +52,35 @@ const ROLES = {
 const VERIFY_WORDS = ["clone", "blaster", "coruscant", "jedi", "sith", "republic", "empire", "droid", "kamino", "fleet", "galaxy", "force", "lightsaber", "walker", "helmet"];
 const pendingVerifications = new Map();
 
-// ==========================================
-// DATABASE SETUP (Local JSON for Servers)
-// ==========================================
 const DATA_FILE = path.join(__dirname, "servers.json");
+const PLAYTIME_FILE = path.join(__dirname, "playtime.json");
 
-function loadServerData() {
-    if (!fs.existsSync(DATA_FILE)) {
-        const defaultData = { whitelistedServers: [], serverRoles: {} };
-        fs.writeFileSync(DATA_FILE, JSON.stringify(defaultData, null, 2));
-        return defaultData;
+function loadJson(file, defaultStruct) {
+    if (!fs.existsSync(file)) {
+        fs.writeFileSync(file, JSON.stringify(defaultStruct, null, 2));
+        return defaultStruct;
     }
-    try {
-        return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-    } catch (err) {
-        console.error("Error reading servers.json:", err);
-        return { whitelistedServers: [], serverRoles: {} };
-    }
+    try { return JSON.parse(fs.readFileSync(file, "utf8")); } 
+    catch { return defaultStruct; }
 }
+function saveJson(file, data) { fs.writeFileSync(file, JSON.stringify(data, null, 2)); }
 
-function saveServerData(data) {
-    try {
-        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-    } catch (err) {
-        console.error("Error saving to servers.json:", err);
-    }
-}
-const db = loadServerData();
+const db = loadJson(DATA_FILE, { whitelistedServers: [], serverRoles: {} });
+const playtimeDb = loadJson(PLAYTIME_FILE, { divisions: {} });
 
 function cleanCookie(cookieString) {
     if (!cookieString) return "";
-    // If the input contains a full cookie string, extract the .ROBLOSECURITY value
     if (cookieString.includes(".ROBLOSECURITY=")) {
         const match = cookieString.match(/\.ROBLOSECURITY=([^;]+)/);
-        if (match) {
-            return match[1].trim();
-        }
+        if (match) return match[1].trim();
     }
     return cookieString.trim();
 }
 
-// Use it when logging into noblox
-const rawCookie = process.env.ROBLOSECURITY;
-const validCookie = cleanCookie(rawCookie);
-
 async function startNoblox() {
     try {
-        // FIX 1: Pass validCookie instead of process.env.ROBLOSECURITY
+        const validCookie = cleanCookie(process.env.ROBLOSECURITY);
         const currentUser = await noblox.setCookie(validCookie);
-        
-        // FIX 2: Use .name (or fallback to .UserName for older noblox versions)
         const username = currentUser.name || currentUser.UserName;
         console.log(`Logged into Roblox as ${username}`);
     } catch (err) {
@@ -111,15 +91,10 @@ startNoblox();
 
 function generatePhrase() {
     let phrase = [];
-    for (let i = 0; i < 4; i++) {
-        phrase.push(VERIFY_WORDS[crypto.randomInt(0, VERIFY_WORDS.length)]);
-    }
+    for (let i = 0; i < 4; i++) phrase.push(VERIFY_WORDS[crypto.randomInt(0, VERIFY_WORDS.length)]);
     return phrase.join(" ");
 }
 
-// ==========================================
-// BGC HELPER FUNCTIONS
-// ==========================================
 async function fetchTrelloBlacklists() {
     try {
         const res = await fetch(`https://trello.com/b/${TRELLO_BOARD_ID}.json`);
@@ -184,14 +159,8 @@ async function checkGroupRank(robloxId, groupId) {
         const groupInfo = data.data.find(g => g.group.id === Number(groupId));
         
         if (!groupInfo) return { passed: false, rankName: "Not in Group", rankId: 0 };
-        return {
-            passed: groupInfo.role.rank >= MIN_CADET_RANK,
-            rankName: groupInfo.role.name,
-            rankId: groupInfo.role.rank
-        };
-    } catch {
-        return { passed: false, rankName: "Error", rankId: 0 };
-    }
+        return { passed: groupInfo.role.rank >= MIN_CADET_RANK, rankName: groupInfo.role.name, rankId: groupInfo.role.rank };
+    } catch { return { passed: false, rankName: "Error", rankId: 0 }; }
 }
 
 async function getBadgeCount(robloxId) {
@@ -218,32 +187,36 @@ async function checkClothingAndAccessories(robloxId) {
     } catch { return false; }
 }
 
-// ==========================================
-// DISCORD BOT COMMANDS & SETUP
-// ==========================================
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 const commands = [
-    new SlashCommandBuilder().setName("whitelist").setDescription("Whitelist a server ID (Admin only)").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(opt => opt.setName("server_id").setDescription("Guild ID").setRequired(true)),
-    new SlashCommandBuilder().setName("setbgcrole").setDescription("Grant/revoke /bgc permission (Admin only)").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addRoleOption(opt => opt.setName("role").setDescription("Role").setRequired(true)).addBooleanOption(opt => opt.setName("allowed").setDescription("True/False").setRequired(true)),
-    new SlashCommandBuilder().setName("talk").setDescription("Send message to channel (Admin only)").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addChannelOption(opt => opt.setName("channel").setDescription("Text channel").setRequired(true).addChannelTypes(ChannelType.GuildText)).addStringOption(opt => opt.setName("message").setDescription("Content").setRequired(true)),
-    new SlashCommandBuilder().setName("embed").setDescription("Send JSON embed (Admin only)").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addChannelOption(opt => opt.setName("channel").setDescription("Text channel").setRequired(true).addChannelTypes(ChannelType.GuildText)).addStringOption(opt => opt.setName("json").setDescription("JSON payload").setRequired(true)),
+    new SlashCommandBuilder().setName("whitelist").setDescription("Whitelist a server ID").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(opt => opt.setName("server_id").setDescription("Guild ID").setRequired(true)),
+    new SlashCommandBuilder().setName("setbgcrole").setDescription("Grant/revoke /bgc permission").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addRoleOption(opt => opt.setName("role").setDescription("Role").setRequired(true)).addBooleanOption(opt => opt.setName("allowed").setDescription("True/False").setRequired(true)),
+    new SlashCommandBuilder().setName("talk").setDescription("Send message to channel").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addChannelOption(opt => opt.setName("channel").setDescription("Text channel").setRequired(true).addChannelTypes(ChannelType.GuildText)).addStringOption(opt => opt.setName("message").setDescription("Content").setRequired(true)),
+    new SlashCommandBuilder().setName("embed").setDescription("Send JSON embed").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addChannelOption(opt => opt.setName("channel").setDescription("Text channel").setRequired(true).addChannelTypes(ChannelType.GuildText)).addStringOption(opt => opt.setName("json").setDescription("JSON payload").setRequired(true)),
     new SlashCommandBuilder().setName("bgc").setDescription("Run a background check").addUserOption(opt => opt.setName("discord_user").setDescription("Discord User").setRequired(true)).addStringOption(opt => opt.setName("roblox_id").setDescription("Roblox ID").setRequired(true)),
     new SlashCommandBuilder().setName("verify").setDescription("Start the Roblox verification process").addStringOption(opt => opt.setName("roblox_username").setDescription("Exact Roblox username").setRequired(true)),
     new SlashCommandBuilder().setName("update").setDescription("Confirm verification and update roles"),
+    
     new SlashCommandBuilder().setName("profile").setDescription("View GAR database profile").addStringOption(opt => opt.setName("roblox_username").setDescription("Roblox username").setRequired(true)),
-    new SlashCommandBuilder().setName("ban").setDescription("Ban a user from the Roblox game via Trello").setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(opt => opt.setName("roblox_id").setDescription("Roblox ID").setRequired(true)).addStringOption(opt => opt.setName("reason").setDescription("Ban Reason").setRequired(true))
+    
+    new SlashCommandBuilder().setName("leaderboard").setDescription("View active divisions leaderboard"),
+    
+    new SlashCommandBuilder().setName("ban").setDescription("Ban a user from the Roblox game via Trello").setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addStringOption(opt => opt.setName("roblox_id").setDescription("Roblox ID").setRequired(true))
+        .addStringOption(opt => opt.setName("reason").setDescription("Ban Reason").setRequired(true))
+        .addNumberOption(opt => opt.setName("hours").setDescription("Time in hours (Leave blank for perma-ban)").setRequired(false)),
+    new SlashCommandBuilder().setName("unban").setDescription("Unban a user").setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addStringOption(opt => opt.setName("roblox_id").setDescription("Roblox ID").setRequired(true))
 ];
 
 client.once("clientReady", async () => {
     console.log(`Logged in as ${client.user.tag}`);
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
-    try {
-        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+    try { 
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commands }); 
         console.log("Registered slash commands successfully.");
-    } catch (error) {
-        console.error("Failed to register commands:", error);
-    }
+    } catch (error) { console.error("Failed to register commands:", error); }
 });
 
 client.on("interactionCreate", async interaction => {
@@ -256,7 +229,7 @@ client.on("interactionCreate", async interaction => {
         const targetServerId = interaction.options.getString("server_id");
         if (!db.whitelistedServers.includes(targetServerId)) {
             db.whitelistedServers.push(targetServerId);
-            saveServerData(db);
+            saveJson(DATA_FILE, db);
         }
         return interaction.reply({ content: `Successfully whitelisted server ID: \`${targetServerId}\`.`, flags: MessageFlags.Ephemeral });
     }
@@ -272,11 +245,11 @@ client.on("interactionCreate", async interaction => {
 
         if (allowed) {
             if (!db.serverRoles[guildId].includes(role.id)) db.serverRoles[guildId].push(role.id);
-            saveServerData(db);
+            saveJson(DATA_FILE, db);
             return interaction.reply({ content: `Successfully **granted** \`/bgc\` access to ${role}.`, flags: MessageFlags.Ephemeral });
         } else {
             db.serverRoles[guildId] = db.serverRoles[guildId].filter(id => id !== role.id);
-            saveServerData(db);
+            saveJson(DATA_FILE, db);
             return interaction.reply({ content: `Successfully **revoked** \`/bgc\` access from ${role}.`, flags: MessageFlags.Ephemeral });
         }
     }
@@ -407,7 +380,6 @@ One Page of Clothing or Accessories: ${hasClothing ? "✅" : "❌"}
                 const cardName = `${pending.username} | ${pending.robloxId} | ${interaction.user.id}`;
                 const defaultData = { leaderstats: { XP: 0, RXP: 0, Kills: 0 }, Gamepasses: {}, Settings: {}, ManualMedals: {}, PermaPerks: {} };
                 
-                // Check if card exists, create if not
                 const res = await fetch(`https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`);
                 const cards = await res.json();
                 if (!cards.find(c => c.name.includes(`| ${pending.robloxId} |`))) {
@@ -438,26 +410,73 @@ One Page of Clothing or Accessories: ${hasClothing ? "✅" : "❌"}
             
             const data = JSON.parse(card.desc || "{}");
             const xp = data.leaderstats ? data.leaderstats.XP : 0;
-            const isBanned = data.isBanned ? `Yes (Reason: ${data.banReason})` : "No";
+            const rankInfo = await checkGroupRank(robloxId, GROUP_ID);
+            
+            const currentRankLevel = Math.floor(xp / 5) + 1;
+            const xpForNextRank = currentRankLevel * 5;
+            const xpProgress = xp - ((currentRankLevel - 1) * 5); 
+            const percent = Math.min(Math.floor((xpProgress / 5) * 100), 100);
+            
+            const blocks = Math.floor(percent / 10);
+            const progressBar = "🟩".repeat(blocks) + "⬛".repeat(10 - blocks);
+
+            // Fetch Avatar
+            const thumb = await noblox.getPlayerThumbnail(robloxId, 420, "png", false, "Body");
+            const avatarUrl = thumb[0].imageUrl;
 
             const embed = new EmbedBuilder()
-                .setTitle(`${username}'s GAR Profile`)
-                .setColor(data.isBanned ? 0xff0000 : 0x0099ff)
+                .setTitle(`${username}'s GAR Data`)
+                .setColor(data.isBanned ? 0xff0000 : 0x1966ff) 
+                .setThumbnail(avatarUrl)
                 .addFields(
-                    { name: "Roblox ID", value: String(robloxId), inline: true },
-                    { name: "XP", value: String(xp), inline: true },
-                    { name: "Banned", value: isBanned, inline: false }
-                );
+                    { name: "👤 Player", value: `${username} (${robloxId})`, inline: true },
+                    { name: "⚡ XP", value: `${xp}`, inline: true },
+                    { name: "🎖️ Current Rank", value: rankInfo.rankName, inline: false },
+                    { name: "📊 Progress to Next Rank", value: `${progressBar}\n${xp} / ${xpForNextRank} (${percent}%)`, inline: false }
+                )
+                .setFooter({ text: `TGE DATA • ${new Date().toLocaleString()}` });
+            
+            if (data.isBanned) {
+                const timeStr = data.unbanTime ? `<t:${Math.floor(data.unbanTime / 1000)}:R>` : "Permanent";
+                embed.addFields({ name: "⚠️ Banned", value: `Reason: ${data.banReason}\nDuration: ${timeStr}`, inline: false });
+            }
+
             return interaction.editReply({ embeds: [embed] });
         } catch (err) {
+            console.error(err);
             return interaction.editReply("Error finding user profile.");
         }
+    }
+
+    if (commandName === "leaderboard") {
+        await interaction.deferReply();
+        const divs = playtimeDb.divisions;
+        
+        const sortedDivs = Object.entries(divs).sort((a, b) => b[1] - a[1]);
+        
+        let desc = "Top active divisions (Last 7 days)\n\n**Rankings**\n";
+        sortedDivs.forEach(([name, minutes], index) => {
+            const hrs = Math.floor(minutes / 60);
+            const mins = Math.floor(minutes % 60);
+            desc += `**${index + 1}. ${name}**\n— ${hrs}h ${mins}m\n\n`;
+        });
+
+        if (sortedDivs.length === 0) desc += "No data available yet.";
+
+        const embed = new EmbedBuilder()
+            .setTitle("Divisions Leaderboard")
+            .setColor(0x8b0000)
+            .setDescription(desc)
+            .setFooter({ text: `TGE BOT • ${new Date().toLocaleString()}` });
+
+        return interaction.editReply({ embeds: [embed] });
     }
 
     if (commandName === "ban") {
         await interaction.deferReply();
         const rId = interaction.options.getString("roblox_id");
         const reason = interaction.options.getString("reason");
+        const hours = interaction.options.getNumber("hours");
         
         try {
             const res = await fetch(`https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`);
@@ -470,124 +489,82 @@ One Page of Clothing or Accessories: ${hasClothing ? "✅" : "❌"}
             data.isBanned = true;
             data.banReason = reason;
             
+            let timeStr = "Permanent";
+            if (hours) {
+                data.unbanTime = Date.now() + (hours * 3600000);
+                timeStr = `${hours} Hours`;
+            }
+
             await fetch(`https://api.trello.com/1/cards/${targetCard.id}?desc=${encodeURIComponent(JSON.stringify(data))}&name=${encodeURIComponent("[BANNED] " + targetCard.name)}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`, { method: 'PUT' });
             
-            return interaction.editReply(`Successfully banned Roblox ID **${rId}**. They will be kicked upon joining the game.`);
+            const banChannel = client.channels.cache.get(BAN_LOG_CHANNEL);
+            if (banChannel) {
+                banChannel.send({ embeds: [new EmbedBuilder()
+                    .setTitle("Player Banned")
+                    .setColor(0xff0000)
+                    .addFields(
+                        { name: "Roblox ID", value: rId, inline: true },
+                        { name: "Duration", value: timeStr, inline: true },
+                        { name: "Reason", value: reason },
+                        { name: "Admin", value: `<@${interaction.user.id}>` }
+                    )
+                ]});
+            }
+
+            return interaction.editReply(`Successfully banned Roblox ID **${rId}** (${timeStr}). They will be kicked upon joining.`);
         } catch (err) {
             return interaction.editReply("API error occurred while processing ban.");
         }
     }
+
+    if (commandName === "unban") {
+        await interaction.deferReply();
+        const rId = interaction.options.getString("roblox_id");
+        try {
+            const res = await fetch(`https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`);
+            const cards = await res.json();
+            const targetCard = cards.find(c => c.name.includes(`| ${rId} |`));
+            
+            if (!targetCard) return interaction.editReply("Could not find a GAR database entry.");
+
+            let data = JSON.parse(targetCard.desc || "{}");
+            data.isBanned = false;
+            delete data.banReason;
+            delete data.unbanTime;
+            
+            let cleanName = targetCard.name.replace("[BANNED] ", "");
+            await fetch(`https://api.trello.com/1/cards/${targetCard.id}?desc=${encodeURIComponent(JSON.stringify(data))}&name=${encodeURIComponent(cleanName)}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`, { method: 'PUT' });
+            
+            const banChannel = client.channels.cache.get(BAN_LOG_CHANNEL);
+            if (banChannel) banChannel.send(`**${rId}** was unbanned by <@${interaction.user.id}>.`);
+
+            return interaction.editReply(`Successfully unbanned Roblox ID **${rId}**.`);
+        } catch (err) {
+            return interaction.editReply("API error occurred.");
+        }
+    }
 });
 
-// ==========================================
-// EXPRESS SERVER (ROBLOX GAME API)
-// ==========================================
 const app = express();
 app.use(express.json());
 
-// HEALTH CHECK ROUTE
 app.get("/", (req, res) => {
     res.status(200).send("GAR Bot API is online and accepting requests!");
 });
-app.use(express.json());
 
-app.post("/api/playerData", async (req, res) => {
-    const { robloxId, username, action, data } = req.body;
-    const startTime = Date.now();
-
-    try {
-        // Verify Trello environment variables exist
-        if (!process.env.TRELLO_KEY || !process.env.TRELLO_TOKEN) {
-            console.error("❌ Missing TRELLO_KEY or TRELLO_TOKEN environment variables in Railway!");
-            return res.status(500).json({ error: "Server missing Trello credentials" });
-        }
-
-        const trelloRes = await fetch(
-            `https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`
-        );
-
-        if (!trelloRes.ok) {
-            const errorText = await trelloRes.text();
-            console.error(`❌ Trello API Request Failed (${trelloRes.status}): ${errorText}`);
-            return res.status(500).json({ error: `Trello Error: ${errorText}` });
-        }
-
-        const cards = await trelloRes.json();
-        let card = cards.find(c => c.name.includes(`| ${robloxId} |`));
-
-if (!card) {
-    if (action === "load") {
-        // Automatically create a new Trello card for first-time players
-        const createRes = await fetch(
-            `https://api.trello.com/1/cards?idList=${TRELLO_DATA_LIST}&name=${encodeURIComponent(`${username} | ${robloxId} |`)}&desc=${encodeURIComponent("{}")}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`,
-            { method: 'POST' }
-        );
-
-        if (!createRes.ok) {
-            console.error("❌ Failed to create Trello card:", await createRes.text());
-            return res.status(500).json({ error: "Failed to create player card" });
-        }
-
-        return res.json({ success: true, data: {} });
-    }
-    return res.status(404).json({ error: "Player card not found" });
-}
-        let cardData = JSON.parse(card.desc || "{}");
-        
-        if (action === "load") {
-            if (cardData.isBanned) return res.json({ banned: true, reason: cardData.banReason });
-            
-            logToDiscord(username, robloxId, "joined", cardData, startTime);
-            return res.json({ success: true, data: cardData });
-        } 
-        
-        if (action === "save") {
-            if (data && data.leaderstats && data.leaderstats.XP !== undefined) {
-                let currentXP = Math.min(data.leaderstats.XP, MAX_XP);
-                let newRankId = Math.floor(currentXP / 5) + 1;
-                
-                const groupRank = await noblox.getRankInGroup(GROUP_ID, robloxId);
-                if (groupRank >= 1 && groupRank <= 13 && newRankId > groupRank && newRankId <= 14) {
-                    await noblox.setRank(GROUP_ID, robloxId, newRankId).catch(console.error);
-                }
-            }
-
-            const putRes = await fetch(
-                `https://api.trello.com/1/cards/${card.id}?desc=${encodeURIComponent(JSON.stringify(data))}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`,
-                { method: 'PUT' }
-            );
-
-            if (!putRes.ok) {
-                const putErrText = await putRes.text();
-                console.error(`❌ Failed to update Trello card: ${putErrText}`);
-            }
-            
-            logToDiscord(username, robloxId, "left", data, startTime);
-            return res.json({ success: true });
-        }
-
-        return res.status(400).json({ error: "Invalid action" });
-    } catch (err) {
-        console.error("❌ Roblox API Internal Server Error:", err);
-        return res.status(500).json({ error: "Internal Server Error", details: err.message });
-    }
-});
-
-function logToDiscord(username, robloxId, action, data, startTime) {
+function logToDiscord(username, robloxId, action, data, startTime, cardId) {
     const channel = client.channels.cache.get(LOG_CHANNEL_ID);
     if (!channel) return;
     
     const timeTaken = ((Date.now() - startTime) / 1000).toFixed(3);
     const actionText = action === "joined" ? "playerdataloading" : "playerdatasaving";
-    let formattedText = `${username} (${robloxId}) ${action} ${Date.now()}\n\`${actionText}\`\n`;
+    let formattedText = `${username} (${robloxId}) ${action} ${Date.now()}\n\`${actionText}\`\n**Card ID:** \`${cardId}\`\n`;
     
     if (action === "joined") {
         for (const [category, values] of Object.entries(data)) {
-            if (typeof values === 'object') {
+            if (typeof values === 'object' && values !== null) {
                 formattedText += `\n**${category}**\n`;
-                for (const [k, v] of Object.entries(values)) {
-                    formattedText += `${k}: ${v}\n`;
-                }
+                for (const [k, v] of Object.entries(values)) formattedText += `${k}: ${v}\n`;
             }
         }
         formattedText += `\n\nplayerdata loaded in ${timeTaken}s`;
@@ -598,7 +575,122 @@ function logToDiscord(username, robloxId, action, data, startTime) {
     channel.send(formattedText).catch(console.error);
 }
 
-// Start Server and Discord Bot
+app.post("/api/playerData", async (req, res) => {
+    const { robloxId, username, action, data } = req.body;
+    const startTime = Date.now();
+
+    try {
+        if (!process.env.TRELLO_KEY || !process.env.TRELLO_TOKEN) {
+            console.error("❌ Missing TRELLO credentials.");
+            return res.status(500).json({ error: "Server missing Trello credentials" });
+        }
+
+        const trelloRes = await fetch(`https://api.trello.com/1/lists/${TRELLO_DATA_LIST}/cards?key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`);
+        if (!trelloRes.ok) return res.status(500).json({ error: `Trello Error` });
+
+        const cards = await trelloRes.json();
+        let card = cards.find(c => c.name.includes(`| ${robloxId} |`));
+
+        if (!card) {
+            if (action === "load") {
+                const createRes = await fetch(
+                    `https://api.trello.com/1/cards?idList=${TRELLO_DATA_LIST}&name=${encodeURIComponent(`${username} | ${robloxId} |`)}&desc=${encodeURIComponent("{}")}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`,
+                    { method: 'POST' }
+                );
+                const newCard = await createRes.json();
+                console.log(`Created new card. Card ID: ${newCard.id}`);
+                return res.json({ success: true, data: {}, cardId: newCard.id });
+            }
+            return res.status(404).json({ error: "Player card not found" });
+        }
+
+        console.log(`Card ID for ${username}: ${card.id}`); 
+        let cardData = JSON.parse(card.desc || "{}");
+        
+        if (action === "load") {
+            // Temp Ban Check
+            if (cardData.isBanned) {
+                if (cardData.unbanTime && Date.now() > cardData.unbanTime) {
+                    cardData.isBanned = false;
+                    delete cardData.banReason;
+                    delete cardData.unbanTime;
+                    await fetch(`https://api.trello.com/1/cards/${card.id}?desc=${encodeURIComponent(JSON.stringify(cardData))}&name=${encodeURIComponent(card.name.replace("[BANNED] ", ""))}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`, { method: 'PUT' });
+                    client.channels.cache.get(BAN_LOG_CHANNEL)?.send(`🕰️ **${username}** (${robloxId})'s temporary ban expired. They have been automatically unbanned.`);
+                } else {
+                    return res.json({ banned: true, reason: cardData.banReason });
+                }
+            }
+            
+            logToDiscord(username, robloxId, "joined", cardData, startTime, card.id);
+            return res.json({ success: true, data: cardData, cardId: card.id });
+        } 
+        
+        if (action === "save") {
+            if (data && data.leaderstats && data.leaderstats.XP !== undefined) {
+                let currentXP = Math.min(data.leaderstats.XP, MAX_XP);
+                let newRankId = Math.floor(currentXP / 5) + 1;
+                
+                const groupRank = await noblox.getRankInGroup(GROUP_ID, robloxId);
+                if (groupRank >= 1 && groupRank <= 13 && newRankId > groupRank && newRankId <= 14) {
+                    await noblox.setRank(GROUP_ID, robloxId, newRankId).catch(console.error);
+                    
+                    // Promotion Logs
+                    const promoChan = client.channels.cache.get(PROMO_LOG_CHANNEL);
+                    if (promoChan) {
+                        promoChan.send({ embeds: [new EmbedBuilder()
+                            .setTitle("⬆️ Rank Update")
+                            .setColor(0x00ff00)
+                            .setDescription(`**${username}** was automatically promoted to Rank ID **${newRankId}** via XP threshold!`)
+                        ]});
+                    }
+                }
+            }
+
+            const putRes = await fetch(
+                `https://api.trello.com/1/cards/${card.id}?desc=${encodeURIComponent(JSON.stringify(data))}&key=${process.env.TRELLO_KEY}&token=${process.env.TRELLO_TOKEN}`,
+                { method: 'PUT' }
+            );
+
+            if (!putRes.ok) console.error(`❌ Failed to update Trello card.`);
+            
+            logToDiscord(username, robloxId, "left", data, startTime, card.id);
+            return res.json({ success: true });
+        }
+
+        return res.status(400).json({ error: "Invalid action" });
+    } catch (err) {
+        console.error("❌ Roblox API Internal Server Error:", err);
+        return res.status(500).json({ error: "Internal Server Error", details: err.message });
+    }
+});
+
+app.post("/api/health", (req, res) => {
+    const { robloxId, username, ping, fps } = req.body;
+    const channel = client.channels.cache.get(HEALTH_LOG_CHANNEL);
+    
+    if (channel) {
+        const embed = new EmbedBuilder()
+            .setTitle(`🩺 Server Health Log - ${username}`)
+            .setColor(ping > 200 || fps < 30 ? 0xffa500 : 0x00ff00)
+            .addFields(
+                { name: "Average Ping", value: `${ping} ms`, inline: true },
+                { name: "Average FPS", value: `${fps}`, inline: true }
+            );
+        channel.send({ embeds: [embed] });
+    }
+    res.json({ success: true });
+});
+
+app.post("/api/playtime", (req, res) => {
+    const { divisionName, sessionMinutes } = req.body;
+    if (divisionName && sessionMinutes) {
+        if (!playtimeDb.divisions[divisionName]) playtimeDb.divisions[divisionName] = 0;
+        playtimeDb.divisions[divisionName] += sessionMinutes;
+        saveJson(PLAYTIME_FILE, playtimeDb);
+    }
+    res.json({ success: true });
+});
+
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, "0.0.0.0", () => {
