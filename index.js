@@ -485,6 +485,12 @@ One Page of Clothing or Accessories: ${hasClothing ? "✅" : "❌"}
 const app = express();
 app.use(express.json());
 
+// HEALTH CHECK ROUTE
+app.get("/", (req, res) => {
+    res.status(200).send("GAR Bot API is online and accepting requests!");
+});
+app.use(express.json());
+
 app.post("/api/playerData", async (req, res) => {
     const { robloxId, username, action, data } = req.body;
     
@@ -556,9 +562,12 @@ function logToDiscord(username, robloxId, action, data, startTime) {
 // Start Server and Discord Bot
 const PORT = process.env.PORT || 3000;
 
-// FIX 3: Bind explicitly to "0.0.0.0" for Railway compatibility
 app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Roblox API Server running on port ${PORT}`);
+    console.log(`✅ Roblox API Server successfully running on port ${PORT}`);
+}).on('error', (err) => {
+    console.error("❌ Express Server failed to start:", err);
 });
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.DISCORD_TOKEN).catch(err => {
+    console.error("❌ Discord Bot failed to login:", err);
+});
