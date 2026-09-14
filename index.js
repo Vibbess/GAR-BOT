@@ -395,10 +395,10 @@ One Page of Clothing or Accessories: ${hasClothing ? "✅" : "❌"}
         if (!pending) return interaction.editReply("You haven't started verification. Run `/verify` first.");
 
         try {
-const blurb = await getRobloxDescription(pending.robloxId);
+            const blurb = await getRobloxDescription(pending.robloxId);
 
-if (blurb.toLowerCase().includes(pending.phrase.toLowerCase())) {
-                    pendingVerifications.delete(interaction.user.id);
+            if (blurb.toLowerCase().includes(pending.phrase.toLowerCase())) {
+                pendingVerifications.delete(interaction.user.id);
                 const member = interaction.member;
                 
                 await member.roles.add([ROLES.VERIFIED_1, ROLES.VERIFIED_2]).catch(console.error);
@@ -524,18 +524,26 @@ app.post("/api/playerData", async (req, res) => {
             `?key=${encodeURIComponent(process.env.TRELLO_KEY)}` +
             `&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}`;
 
-        const trelloRes = await fetch(trelloUrl);
+        // Added retry mechanism for rate limits (HTTP 429) & connection glitches
+        let trelloRes;
+        let retries = 3;
+        while (retries > 0) {
+            trelloRes = await fetch(trelloUrl);
+            if (trelloRes.ok || trelloRes.status !== 429) break;
+            retries--;
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
 
-        if (!trelloRes.ok) {
-            const trelloText = await trelloRes.text();
+        if (!trelloRes || !trelloRes.ok) {
+            const trelloText = trelloRes ? await trelloRes.text() : "No response";
 
             console.error(
-                `Trello API error ${trelloRes.status}: ${trelloText}`
+                `Trello API error ${trelloRes ? trelloRes.status : "unknown"}: ${trelloText}`
             );
 
             return res.status(502).json({
                 success: false,
-                error: "Trello API unavailable"
+                error: `Trello API unavailable (${trelloRes ? trelloRes.status : "unknown"}): ${trelloText}`
             });
         }
 
@@ -668,8 +676,6 @@ app.post("/api/playerData", async (req, res) => {
                         `Rank update failed for ${username}:`,
                         rankError.message
                     );
-
-                    // Don't prevent the player's data from saving.
                 }
             }
 
