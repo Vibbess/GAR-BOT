@@ -486,6 +486,11 @@ One Page of Clothing or Accessories: ${hasClothing ? "✅" : "❌"}
 const app = express();
 app.use(express.json());
 
+// Root route handler to prevent Railway application response errors
+app.get("/", (req, res) => {
+    res.status(200).send("GAR Bot & API Server is running!");
+});
+
 app.post("/api/playerData", async (req, res) => {
     const startTime = Date.now();
 
@@ -524,7 +529,6 @@ app.post("/api/playerData", async (req, res) => {
             `?key=${encodeURIComponent(process.env.TRELLO_KEY)}` +
             `&token=${encodeURIComponent(process.env.TRELLO_TOKEN)}`;
 
-        // Added retry mechanism for rate limits (HTTP 429) & connection glitches
         let trelloRes;
         let retries = 3;
         while (retries > 0) {
@@ -589,10 +593,6 @@ app.post("/api/playerData", async (req, res) => {
             });
         }
 
-        // ==========================
-        // LOAD
-        // ==========================
-
         if (action === "load") {
             if (cardData.isBanned) {
                 console.log(
@@ -620,10 +620,6 @@ app.post("/api/playerData", async (req, res) => {
                 data: cardData
             });
         }
-
-        // ==========================
-        // SAVE
-        // ==========================
 
         if (action === "save") {
             if (!data || typeof data !== "object") {
