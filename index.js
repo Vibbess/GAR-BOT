@@ -95,19 +95,14 @@ function cleanCookie(cookieString) {
 const rawCookie = process.env.ROBLOSECURITY;
 const validCookie = cleanCookie(rawCookie);
 
-noblox.setCookie(validCookie).then((user) => {
-    console.log(`Logged into Roblox as ${user.UserName}`);
-}).catch((err) => {
-    console.error("Failed to log into Roblox:", err);
-});
-
-// ==========================================
-// NOBLOX & HELPERS
-// ==========================================
 async function startNoblox() {
     try {
-        const currentUser = await noblox.setCookie(process.env.ROBLOSECURITY);
-        console.log(`Logged into Roblox as ${currentUser.UserName}`);
+        // FIX 1: Pass validCookie instead of process.env.ROBLOSECURITY
+        const currentUser = await noblox.setCookie(validCookie);
+        
+        // FIX 2: Use .name (or fallback to .UserName for older noblox versions)
+        const username = currentUser.name || currentUser.UserName;
+        console.log(`Logged into Roblox as ${username}`);
     } catch (err) {
         console.error("Failed to login to Roblox:", err.message);
     }
@@ -560,5 +555,10 @@ function logToDiscord(username, robloxId, action, data, startTime) {
 
 // Start Server and Discord Bot
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Roblox API Server running on port ${PORT}`));
+
+// FIX 3: Bind explicitly to "0.0.0.0" for Railway compatibility
+app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Roblox API Server running on port ${PORT}`);
+});
+
 client.login(process.env.DISCORD_TOKEN);
