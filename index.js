@@ -434,7 +434,7 @@ One Page of Clothing or Accessories: ${hasClothing ? "✅" : "❌"}
                     { name: "🎖️ Current Rank", value: rankInfo.rankName, inline: false },
                     { name: "📊 Progress to Next Rank", value: `${progressBar}\n${xp} / ${xpForNextRank} (${percent}%)`, inline: false }
                 )
-                .setFooter({ text: `TGE DATA • ${new Date().toLocaleString()}` });
+                .setFooter({ text: `GAR DATA • ${new Date().toLocaleString()}` });
             
             if (data.isBanned) {
                 const timeStr = data.unbanTime ? `<t:${Math.floor(data.unbanTime / 1000)}:R>` : "Permanent";
@@ -467,7 +467,7 @@ One Page of Clothing or Accessories: ${hasClothing ? "✅" : "❌"}
             .setTitle("Divisions Leaderboard")
             .setColor(0x8b0000)
             .setDescription(desc)
-            .setFooter({ text: `TGE BOT • ${new Date().toLocaleString()}` });
+            .setFooter({ text: `GAR BOT • ${new Date().toLocaleString()}` });
 
         return interaction.editReply({ embeds: [embed] });
     }
@@ -638,7 +638,7 @@ app.post("/api/playerData", async (req, res) => {
                     const promoChan = client.channels.cache.get(PROMO_LOG_CHANNEL);
                     if (promoChan) {
                         promoChan.send({ embeds: [new EmbedBuilder()
-                            .setTitle("⬆️ Rank Update")
+                            .setTitle("Rank Update")
                             .setColor(0x00ff00)
                             .setDescription(`**${username}** was automatically promoted to Rank ID **${newRankId}** via XP threshold!`)
                         ]});
@@ -670,7 +670,7 @@ app.post("/api/health", (req, res) => {
     
     if (channel) {
         const embed = new EmbedBuilder()
-            .setTitle(`🩺 Server Health Log - ${username}`)
+            .setTitle(`Server Health Log - ${username}`)
             .setColor(ping > 200 || fps < 30 ? 0xffa500 : 0x00ff00)
             .addFields(
                 { name: "Average Ping", value: `${ping} ms`, inline: true },
