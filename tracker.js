@@ -3,46 +3,39 @@ const noblox = require('noblox.js');
 
 let isCurrentlyInGame = false; 
 
+// --- 1. Noblox & Cookie Setup ---
 function cleanCookie(cookieString) {
     if (!cookieString) return "";
-    let cleaned = cookieString.trim();
-    
-    // Remove surrounding quotes if Railway wrapped them in quotes
-    if ((cleaned.startsWith('"') && cleaned.endsWith('"')) || (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
-        cleaned = cleaned.slice(1, -1).trim();
+    if (cookieString.includes(".ROBLOSECURITY=")) {
+        const match = cookieString.match(/\.ROBLOSECURITY=([^;]+)/);
+        if (match) return match[1].trim();
     }
-    
-    // Strip out common key prefixes if they accidentally got included in the value
-    cleaned = cleaned.replace(/^(ROBLOX_COOKIE|ROBLOSECURITY|\.ROBLOSECURITY)=/i, '');
-    
-    return cleaned.trim();
+    return cookieString.trim();
 }
 
 async function startNoblox() {
     try {
-        const rawCookie = process.env.ROBLOSECURITY || process.env.ROBLOX_COOKIE;
-        
-        if (!rawCookie) {
-            console.error("[DEBUG WARNING] No ROBLOSECURITY or ROBLOX_COOKIE found in environment variables!");
+        const validCookie = cleanCookie(process.env.ROBLOSECURITY);
+        if (!validCookie) {
+            console.log("[DEBUG WARNING] No ROBLOSECURITY found in env! Continuing unauthenticated...");
             return;
         }
-
-        const validCookie = cleanCookie(rawCookie);
         const currentUser = await noblox.setCookie(validCookie);
         const username = currentUser.name || currentUser.UserName;
-        console.log(`Logged into Roblox as ${username}`);
+        console.log(`[Noblox] Logged into Roblox as ${username}`);
     } catch (err) {
-        console.error("Failed to login to Roblox:", err.message);
+        console.error("[Noblox] Failed to login to Roblox:", err.message);
     }
 }
 
+// --- 2. Presence Checking Logic ---
 async function checkPresence(targetUserId, targetPlaceId, webhookUrl) {
     try {
         const headers = {};
-        const rawCookie = process.env.ROBLOSECURITY || process.env.ROBLOX_COOKIE;
         
-        if (rawCookie) {
-            const validCookie = cleanCookie(rawCookie);
+        // Grab the cleaned cookie for our axios request
+        const validCookie = cleanCookie(process.env.ROBLOSECURITY);
+        if (validCookie) {
             headers['Cookie'] = `.ROBLOSECURITY=${validCookie}`;
         }
 
@@ -63,8 +56,12 @@ async function checkPresence(targetUserId, targetPlaceId, webhookUrl) {
         if (isInGameNow && !isCurrentlyInGame) {
             isCurrentlyInGame = true;
             console.log(`[Roblox Tracker] Match found! Sending join webhook...`);
-            const pingMessage = `<@&1460736233885007895>\n\n# <:DarthVader:1460772872896118965>  He Awaits you.. <:DarthVader:1460772872896118965>\n\n**Lord Vader has just joined the [game](https://www.roblox.com/games/${targetPlaceId})**!`;
-            await sendDiscordAlert(webhookUrl, pingMessage);
+            
+            // Added the role ping <@&ROLE_ID> right before the message
+            await sendDiscordAlert(
+                webhookUrl, 
+                `<@&1460736233885007895>\n# <:DarthVader:1460772872896118965>  He Awaits you.. <:DarthVader:1460772872896118965> **Lord Vader has just joined *the [game](https://www.roblox.com/games/${targetPlaceId})***!`
+            );
         } 
         else if (!isInGameNow && isCurrentlyInGame) {
             isCurrentlyInGame = false;
@@ -77,9 +74,10 @@ async function checkPresence(targetUserId, targetPlaceId, webhookUrl) {
     }
 }
 
+// --- 3. Discord Webhook Sender ---
 async function sendDiscordAlert(webhookUrl, message) {
     if (!webhookUrl) {
-        console.error("[Roblox Tracker Error] Webhook URL is missing or undefined! Check your Railway Environment Variables.");
+        console.error("[Roblox Tracker Error] Webhook URL is missing or undefined! Check your Environment Variables.");
         return;
     }
     try {
@@ -90,16 +88,17 @@ async function sendDiscordAlert(webhookUrl, message) {
     }
 }
 
-function startTracking(targetUserId, targetPlaceId, webhookUrl, intervalMs = 60000) {
+// --- 4. Initialization ---
+async function startTracking(targetUserId, targetPlaceId, webhookUrl, intervalMs = 60000) {
+    // Run the noblox login first
+    await startNoblox();
+
     console.log(`[Roblox Tracker] Monitoring initialized for User ${targetUserId}. Checking every ${intervalMs / 1000}s...`);
     
-    // Initialize noblox login on start
-    startNoblox();
-    
-    // Run presence check once immediately on startup
+    // Run once immediately on startup
     checkPresence(targetUserId, targetPlaceId, webhookUrl);
     
-    // Check loop
+    // Start the check loop
     setInterval(() => {
         checkPresence(targetUserId, targetPlaceId, webhookUrl);
     }, intervalMs);
