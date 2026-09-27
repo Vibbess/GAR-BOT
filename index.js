@@ -49,6 +49,15 @@ const ROLES = {
     }
 };
 
+
+const { startTracking } = require('./tracker');
+
+const TARGET_USER_ID = '3604509402'; 
+const TARGET_PLACE_ID = '9388793159'; 
+const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL; 
+
+startTracking(TARGET_USER_ID, TARGET_PLACE_ID, WEBHOOK_URL, 60000);
+
 const VERIFY_WORDS = ["clone", "blaster", "coruscant", "jedi", "sith", "republic", "empire", "droid", "kamino", "fleet", "galaxy", "force", "lightsaber", "walker", "helmet"];
 const pendingVerifications = new Map();
 
