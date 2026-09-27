@@ -5,16 +5,21 @@ let isCurrentlyInGame = false;
 
 function cleanCookie(cookieString) {
     if (!cookieString) return "";
-    if (cookieString.includes(".ROBLOSECURITY=")) {
-        const match = cookieString.match(/\.ROBLOSECURITY=([^;]+)/);
-        if (match) return match[1].trim();
+    let cleaned = cookieString.trim();
+    
+    // Remove surrounding quotes if Railway wrapped them in quotes
+    if ((cleaned.startsWith('"') && cleaned.endsWith('"')) || (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
+        cleaned = cleaned.slice(1, -1).trim();
     }
-    return cookieString.trim();
+    
+    // Strip out common key prefixes if they accidentally got included in the value
+    cleaned = cleaned.replace(/^(ROBLOX_COOKIE|ROBLOSECURITY|\.ROBLOSECURITY)=/i, '');
+    
+    return cleaned.trim();
 }
 
 async function startNoblox() {
     try {
-        // Checks both environment variable names to prevent mismatch issues
         const rawCookie = process.env.ROBLOSECURITY || process.env.ROBLOX_COOKIE;
         
         if (!rawCookie) {
